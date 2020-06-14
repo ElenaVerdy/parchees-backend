@@ -1,11 +1,10 @@
 const express = require('express');
 const app = express();
-const server = app.listen(8080, () => console.log('Listening on port 8080!'));
+const server = app.listen(process.env.PORT || 8080, () => console.log(`Listening on port ${process.env.PORT || 8080}!`));
 const io = require("socket.io")(server);
-const _ = require('lodash');
 
 app.use(express.static(__dirname + '/public'));
-io.set('origins', 'http://192.168.1.67:3000/');
+io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
 
 const tables = [];
 tables.remove = function(tableId) {
