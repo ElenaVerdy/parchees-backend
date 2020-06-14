@@ -6,7 +6,7 @@ const io = require("socket.io")(server);
 app.use(express.static(__dirname + '/public'));
 io.set('origins', '*');
 
-app.get("test", (req, res)=>{
+app.get("/test", (req, res)=>{
     res.end("test indeed")
 })
 
