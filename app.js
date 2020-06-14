@@ -6,6 +6,10 @@ const io = require("socket.io")(server);
 app.use(express.static(__dirname + '/public'));
 io.set('origins', '*');
 
+app.get("test", (req, res)=>{
+    res.end("test indeed")
+})
+
 const tables = [];
 tables.remove = function(tableId) {
     let table = this.find(table => table.id === tableId);
