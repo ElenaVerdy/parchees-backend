@@ -14,7 +14,7 @@ app.use(function(req, res, next) {
     next();
 });
 
-io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
+//io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
 
 app.get("/test", (req, res)=>{
     res.end("test indeed")
