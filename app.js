@@ -4,7 +4,7 @@ const server = app.listen(process.env.PORT || 8080, () => console.log(`Listening
 const io = require("socket.io")(server);
 
 app.use(express.static(__dirname + '/public'));
-io.set('origins', '*');
+io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
 
 app.get("/test", (req, res)=>{
     res.end("test indeed")
