@@ -2,14 +2,13 @@ const express = require('express');
 const app = express();
 const server = app.listen(process.env.PORT || 8080, () => console.log(`Listening on port ${process.env.PORT || 8080}!`));
 const io = require("socket.io")(server);
+const cloneDeep = require('lodash.clonedeep');
 
 app.use(express.static(__dirname + '/public'));
-
 
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
-    console.log(process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
 });
@@ -583,7 +582,7 @@ function createScheme() {
 function newGame(players) {
     let ret = {
         id: ("id_" + (Math.random() * 100000000 ^ 0)),
-        players: _.cloneDeep(players),
+        players: cloneDeep(players),
         playersOrder: getPlayers(players.length),
         dice: [],
         chips: defaultChipsPositions(getPlayers(players.length)),
