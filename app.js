@@ -397,9 +397,7 @@ function findNextTurn(table) {
     let ret = table.game.turn;
     for (let i = 0; i < 4; i++) {
         ret = ((ret + 1) === table.game.players.length) ? 0 : ret + 1;
-        if (!table.game.players[ret]) {
-            console.log(ret, table.game.players, table.players)
-        }
+
         if (!table.game.players[ret].left)
             return ret;
     }
