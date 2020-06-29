@@ -12,8 +12,8 @@ app.use(express.static(__dirname + '/public'));
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
 });*/
-
-io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
+console.log(process.env.PORT)
+io.set('origins', 'https://parchees-82bf1.web.app/');
 
 app.get("/test", (req, res)=>{
     res.end("test indeed")
