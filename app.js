@@ -1,19 +1,19 @@
 const express = require('express');
 const app = express();
-const server = app.listen(process.env.PORT || 8080, () => console.log(`Listening on port ${process.env.PORT || 8080}!`));
+const server = app.listen(process.env.PORT || 8000, () => console.log(`Listening on port ${process.env.PORT || 8000}!`));
 const io = require("socket.io")(server);
 const cloneDeep = require('lodash.clonedeep');
 
 app.use(express.static(__dirname + '/public'));
 
-app.use(function(req, res, next) { 
+/*app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
-});
+});*/
 
-//io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
+io.set('origins', process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
 
 app.get("/test", (req, res)=>{
     res.end("test indeed")
@@ -192,30 +192,31 @@ io.on("connection", socket => {
     })
 
     socket.on("chip-moved", data => {
-
         let table = tables.findById(data.tableId);
         if (!table) {
-            socket.emit("player-made-move", {error: "game not found"})
+            socket.emit("player-made-move", {error: "game not found"});
             return;
         }
         let player = tables.findPlayer(data.tableId, socket.id);
         if (!player) {
-            socket.emit("player-made-move", {error: "You are not in the game"})
+            socket.emit("player-made-move", {error: "You are not in the game"});
             return;
         }
         if (data.yourTurn !== table.game.turn) {
-            socket.emit("player-made-move", {error: "not your turn"})
+            socket.emit("player-made-move", {error: "not your turn"});
             return;
         }
 
         if (!table.game.dice[data.diceNum]) {
-            socket.emit("player-made-move", {error: "this dice already used"})
+            socket.emit("player-made-move", {error: "this dice already used"});
             return;
         }
-        
+
         let route = getRoute(table, data.diceNum, data.chipNum, data.targetId);
         if (route) {
-            moveChipOnRoute(table, table.game.chips[table.game.playersOrder[data.yourTurn]][data.chipNum], route, data.diceNum)
+            moveChipOnRoute(table, table.game.chips[table.game.playersOrder[data.yourTurn]][data.chipNum], route, data.diceNum);
+        } else {
+            socket.emit("player-made-move", {error: "Can't build route"});
         }
     })
 })
@@ -249,11 +250,11 @@ function nextTurn(tableId, socketId) {
 
 function moveChipOnRoute(table, chip, route, diceNum) {
     table.game.dice[diceNum] = undefined;
-    
+
     io.in(table.id).emit("player-made-move", {playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum});
     
     for (let i = 0; i < route.length; i++) {
-        moveChipToCell(table, chip, route[i], diceNum);  
+        moveChipToCell(table, chip, route[i]);  
         if (i === route.length - 1) {
             if (checkForWin(table, chip.player)) {
                 gameWon(table, chip.player);
@@ -278,30 +279,22 @@ function gameWon(table, playerNum) {
     io.in(table.id).emit("player-won", {results});
     io.in(table.id).emit('update-players', {players: table.players})
 }
-function moveChipToCell(table, chip, destination, diceNum, toBase = false) {
+function moveChipToCell(table, chip, destination, toBase = false) {
     let scheme = table.game.scheme;
 
-    scheme[chip.position].chip = null;
+    scheme[chip.position].chips.splice(scheme[chip.position].chips.indexOf(chip.id), 1);
 
     chip.position = destination;
     chip.isAtBase = toBase;
 
-    if (scheme[destination].chip) {
-        let eatenChipPlayer = scheme[destination].chip[16];
-        let eatenChipNum = scheme[destination].chip[21];
+    if (scheme[destination].chips.length && getPlayerFromCell(table, destination) != chip.player) {
+        let eatenChipPlayer = scheme[destination].chips[0][16];
+        let eatenChipNum = scheme[destination].chips[0][21];
 
-        moveChipToCell(table, table.game.chips[eatenChipPlayer][eatenChipNum], `game_chip-base_chip-space_player${eatenChipPlayer}_num${eatenChipNum}`, null, true);
-        setTimeout(() => {
-            io.in(table.id).emit("player-made-move", {
-                playerNum: eatenChipPlayer, 
-                num: eatenChipNum, 
-                position: `game_chip-base_chip-space_player${eatenChipPlayer}_num${eatenChipNum}`,
-                diceNum
-            });
-        }, 100)
+        moveChipToCell(table, table.game.chips[eatenChipPlayer][eatenChipNum], `game_chip-base_chip-space_player${eatenChipPlayer}_num${eatenChipNum}`, true);
     }
 
-    scheme[destination].chip = chip.id;
+    scheme[destination].chips.push(chip.id);
 }
 
 function getRoute(table, diceNum, chipNum, cellId) {
@@ -321,8 +314,7 @@ function getRoute(table, diceNum, chipNum, cellId) {
     if (dice === 3 && chipCell.links.for3 && chipCell.links.for3 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer) {
         return [chipCell.links.for3];
     }
-    
-    if (dice === 6 && chipCell.links.for6 && chipCell.links.for6 === cellId && !table.game.scheme[cellId].chip) {
+    if (dice === 6 && chipCell.links.for6 && chipCell.links.for6 === cellId) {
         return [chipCell.links.for6];
     }
     
@@ -331,9 +323,10 @@ function getRoute(table, diceNum, chipNum, cellId) {
     if (!chip.isAtBase) {
         let current = chipCell;
         let canMove = true;
-        
+        let toFinish = cellId.indexOf('game_cell-finish') !== -1;
+
         if (current.isSH) {
-            if (scheme[current.links.outOfSH].chip) {
+            if (scheme[current.links.outOfSH].chips.length) {
                 return false;
             } else {
                 route.push(current.links.outOfSH);
@@ -342,43 +335,31 @@ function getRoute(table, diceNum, chipNum, cellId) {
         }
 
         for (let i = 1; i <= dice; i++) {
-            
-            current = scheme[(current.links["toFinish" + currentPlayer]) || current.links.next];
-            if (!current) {
-                return false;
-            }
+            if (toFinish)
+                current = scheme[(current.links["toFinish" + currentPlayer]) || current.links.next];
+            else
+                current = scheme[current.links.next];
+
+            if (!current) return false;
 
             route.push(current.id)
             
-            if (current.chip && i !== dice) {
+            if (current.chips.length && i !== dice)
                 return false;
-                
-            } else if (current.chip && i === dice) {
-                
+            else if (current.chips.length && i === dice)
                 if (getPlayerFromCell(current.id) === currentPlayer)
                     return false;
-            }
         }
         
         if (canMove) {
-
-            if (current.id === cellId) {
-                result = route;
-            }
+            if (current.links.end && current.links.end === cellId) route.push(current.links.end);
+            if (current.links.toSH && current.links.toSH === cellId) route.push(current.links.toSH);
             
-            if (current.links.end && current.links.end === cellId) {
-                route.push(current.links.end);
-                result = route;
-            }
-            
-            if (current.links.toSH && current.links.toSH === cellId) {
-                route.push(current.links.toSH);
-                result = route;
-            }
-
+            result = route;
         }
     }
-    
+    if (!route.length)
+        console.log(dice, currentPlayer, chip, cellId)
     return result;
 }
 
@@ -415,6 +396,7 @@ function countDown(table, turnOff) {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players});
+            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 7);
         }, 5000)
     }
 }
@@ -447,7 +429,7 @@ function playerLeftTheGame(table, socketId) {
     io.in(table.id).emit("update-players", {playerLeftIndex: gamePlayerIndex});
 
     [1, 2, 3, 4].forEach((chipNum) => {
-        moveChipToCell(table, table.game.chips[playerNum][chipNum], `game_chip-base_chip-space_player${playerNum}_num${chipNum}`, null, true);
+        moveChipToCell(table, table.game.chips[playerNum][chipNum], `game_chip-base_chip-space_player${playerNum}_num${chipNum}`, true);
     });
     if (table.game.turn === gamePlayerIndex) {
         nextTurn(table.id, socketId);
@@ -474,6 +456,7 @@ function createScheme() {
     for (let i = 1; i <= 48; i++) {
         let k = {};
         let id = "game_cell" + i;
+        k.chips = [];
         let links = {};
         links.next = "game_cell" + (i === 48 ? 1 : (i + 1));
         k.links = links;
@@ -506,9 +489,9 @@ function createScheme() {
                 
                 let finish = {
                     isFinish: true,
-                    id: `game_cell-finish_player${n}_${k}`
+                    id: `game_cell-finish_player${n}_${k}`,
+                    chips: []
                 };
-
                 finish.links = { next: (k === 4 ? null : `game_cell-finish_player${n}_${k + 1}`) };
     
                 ret[finish.id] = finish;
@@ -537,17 +520,16 @@ function createScheme() {
             }
             let start = {
                 isStart: true,
-                id:("game_start-cell_player" + n)
+                id:("game_start-cell_player" + n),
+                chips: [],
+                links: { next: id }
             };
-            start.links = { next: id };
 
             ret[start.id] = start;
 
             [1, 2, 3, 4].forEach(k => {
                 let baseId = `game_chip-base_chip-space_player${n}_num${k}`;
-                let base = { id: baseId };
-                base.isBase = true;
-                base.links = {for6: start.id}
+                let base = { id: baseId, isBase: true, links: {for6: start.id}, chips: [] };
                 ret[baseId] = base;
             })
 
@@ -561,17 +543,15 @@ function createScheme() {
         }
         if (i % 12 === 10) {
             links.toSH = "game_cell-safe-house" + ((i - 10) / 12);
-
             let sh = {
                 isSH: true,
                 chipId: null,
-                id:("game_cell-safe-house" + ((i - 10) / 12))
+                id: links.toSH,
+                links: { outOfSH: id },
+                chips: []
             };
-            sh.links = { outOfSH: id };
-
             ret[sh.id] = sh;
         }
-
     }
 
     return ret;
@@ -648,7 +628,7 @@ function getPlayerFromCell(table, cellId) {
     if (!table.game)
         return null;
 
-    let chipId = table.game.scheme[cellId].chip;
+    let chipId = table.game.scheme[cellId].chips[0];
 
     if (chipId && chipId[16])
         return +chipId[16];
@@ -659,7 +639,7 @@ function getPlayerFromCell(table, cellId) {
 function checkForWin(table, playerNum) {
     let scheme = table.game.scheme;
     for (let i = 1; i < 5; i++) {
-        if (!scheme[`game_cell-finish_player${playerNum}_${i}`].chip)
+        if (scheme[`game_cell-finish_player${playerNum}_${i}`].chips.length !== 1)
             return false;
     }
     return true;
