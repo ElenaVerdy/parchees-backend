@@ -12,7 +12,6 @@ app.use(function(req, res, next) {
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
 });
-//console.log(process.env.PORT)
 //io.set('origins', 'https://parchees-82bf1.web.app/');
 
 app.get("/test", (req, res)=>{
@@ -87,9 +86,10 @@ io.on("connection", socket => {
         let player = {
             id: socket.id, 
             ready: false, 
-            name: "Игрок", 
-            picture: "https://static-s.aa-cdn.net/img/ios/846073598/46f520ebc3d526b7b251d87af200ca03?v=1",
-            rank: 2100
+            name: data.username,
+            photo_50: data.photo_50,
+            photo_100: data.photo_100,
+            rank: data.rank
         };
 
         tables.push({id: tableId, players: [player]});
@@ -108,11 +108,13 @@ io.on("connection", socket => {
         }
 
         table.players.push({
-            id: socket.id, 
-            ready: false, 
-            name: "Игрок",
-            rank: 2100,
-            picture: "https://static-s.aa-cdn.net/img/ios/846073598/46f520ebc3d526b7b251d87af200ca03?v=1"});
+            id: socket.id,
+            ready: false,
+            name: data.username,
+            photo_50: data.photo_50,
+            photo_100: data.photo_100,
+            rank: data.rank
+        });
         socket.emit("connect-to", {id: table.id, players: table.players, tableId: table.id});
         socket.join(table.id);
         io.in(table.id).emit("update-players", {players: table.players});
