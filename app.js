@@ -398,7 +398,6 @@ function countDown(table, turnOff) {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players});
-            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 7);
         }, 5000)
     }
 }
