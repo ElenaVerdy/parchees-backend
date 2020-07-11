@@ -137,45 +137,7 @@ io.on("connection", socket => {
         })
     });
 
-    socket.on("roll-dice", (data) => {
-        let table = tables.findById(data.tableId);
-        if (!table || !table.game) {
-            socket.emit("dice-rolled", {error: "404: Игра не найдена."});
-            return;
-        }
-
-        let player = tables.findPlayer(data.tableId, socket.id);
-        if (!player) {
-            socket.emit("dice-rolled", {error: "Игрок не участвует в игре!"})
-            return;
-        }
-
-        if (tables.indexOfGamePlayer(table.id, socket.id) !== table.game.turn) {
-            socket.emit("dice-rolled", {error: "Не ваш ход!"});
-            return;
-        }
-        
-        if (table.game.diceRolled && !table.game.doublesStreak) {
-            socket.emit("dice-rolled", {error: "Кубики уже брошены!"});
-            return;
-        }
-
-        let dice = [];
-        
-        dice[0] = data.dice[0] || Math.ceil(Math.random() * 6);
-        dice[1] = data.dice[1] || Math.ceil(Math.random() * 6);
-        
-        if (dice[0] === dice[1]) {
-            table.game.doublesStreak = table.game.doublesStreak === 2 ? 0 : table.game.doublesStreak + 1;
-        } else {
-            table.game.doublesStreak = 0;
-        }
-
-        table.game.dice = dice;
-        table.game.diceRolled = true;
-
-        io.in(data.tableId).emit("dice-rolled", {dice});
-    });
+    socket.on("roll-dice", diceRolledHandler.bind(socket));
 
     socket.on("finish-turn", data => nextTurn(data.tableId, socket.id));
     
@@ -191,37 +153,167 @@ io.on("connection", socket => {
         io.in(table.id).emit("update-players", {players: table.players});
         
         updateCountDown(table.id);
-    })
+    });
 
-    socket.on("chip-moved", data => {
+    socket.on("chip-moved", playerMadeMove.bind(socket));
+    socket.on("timed-out", data => {
         let table = tables.findById(data.tableId);
-        if (!table) {
-            socket.emit("player-made-move", {error: "game not found"});
-            return;
-        }
-        let player = tables.findPlayer(data.tableId, socket.id);
-        if (!player) {
-            socket.emit("player-made-move", {error: "You are not in the game"});
-            return;
-        }
-        if (data.yourTurn !== table.game.turn) {
-            socket.emit("player-made-move", {error: "not your turn"});
-            return;
-        }
+        if (!table || !table.game) return;
 
-        if (!table.game.dice[data.diceNum]) {
-            socket.emit("player-made-move", {error: "this dice already used"});
-            return;
-        }
+        let gamePlayerIndex = tables.indexOfGamePlayer(data.tableId, socket.id);
+        let gamePlayer = table.game.players[gamePlayerIndex];
 
-        let route = getRoute(table, data.diceNum, data.chipNum, data.targetId);
-        if (route) {
-            moveChipOnRoute(table, table.game.chips[table.game.playersOrder[data.yourTurn]][data.chipNum], route, data.diceNum);
-        } else {
-            socket.emit("player-made-move", {error: "Can't build route"});
+        if (!gamePlayer) return;
+        if (gamePlayerIndex !== table.game.turn) return;
+
+        if (!table.game.diceRolled && !table.game.players[gamePlayerIndex].left && table.game.players[gamePlayerIndex].missedLastTurn) {
+            playerDisconnected(table, socket.id);
+            io.to(socket.id).emit('removed');
         }
-    })
+    
+        if (!table.game.diceRolled && !table.game.players[gamePlayerIndex].left) {
+            // table.game.players[gamePlayerIndex].missedLastTurn = true;
+        }
+        table.game.autoMove = true;
+        autoMove.call(socket, table, gamePlayerIndex);
+    });
 })
+
+function playerMadeMove(data) {
+    let table = tables.findById(data.tableId);
+    if (!table) {
+        this.emit("player-made-move", {error: "game not found"});
+        return;
+    }
+    let player = tables.findPlayer(data.tableId, this.id);
+    if (!player) {
+        this.emit("player-made-move", {error: "You are not in the game"});
+        return;
+    }
+    if (data.yourTurn !== table.game.turn) {
+        this.emit("player-made-move", {error: "not your turn"});
+        return;
+    }
+
+    if (!table.game.dice[data.diceNum]) {
+        this.emit("player-made-move", {error: "this dice already used"});
+        return;
+    }
+
+    let route = getRoute(table, data.diceNum, data.chipNum, data.targetId);
+    if (route) {
+        moveChipOnRoute(table, table.game.chips[table.game.playersOrder[data.yourTurn]][data.chipNum], route, data.diceNum);
+    } else {
+        this.emit("player-made-move", {error: "Can't build route"});
+    }
+}
+
+function autoMove(table, gamePlayerIndex) {
+    if (!table.game.diceRolled) {
+        diceRolledHandler.call(this, {tableId: table.id, dice: []});
+    } else {
+        if (!table.game.dice[0] && !table.game.dice[1]) {
+            if (table.game.doublesStreak)
+                diceRolledHandler.call(this, {tableId: table.id, dice: []});
+            else
+                return nextTurn(table.id, this.id);
+        } else {
+            if (!makeRandomMove.call(this, table, gamePlayerIndex))
+                return nextTurn(table.id, this.id);
+        }
+    }
+    autoMove.call(this, table, table.game.turn);
+}
+
+function makeRandomMove(table, gamePlayerIndex) {
+    let dice = table.game.dice;
+    let possibleMoves = [];
+    if (dice[0]) 
+        [1, 2, 3, 4].forEach(i => {
+            getPossibleMoves(table.game.chips[table.game.playersOrder[gamePlayerIndex]][i], dice[0], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '0', chipNum: i, targetId: k}));
+        });
+    if (dice[1]) 
+        [1, 2, 3, 4].forEach(i => {
+            getPossibleMoves(table.game.chips[table.game.playersOrder[gamePlayerIndex]][i], dice[1], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '1', chipNum: i, targetId: k}));
+        });
+    if (!possibleMoves.length) {
+        table.game.dice[0] = table.game.dice[1] = undefined;
+        return false;
+    }
+    let move = possibleMoves[(Math.random() * possibleMoves.length) ^ 0];
+
+    playerMadeMove.call(this, {tableId: table.id, yourTurn: gamePlayerIndex, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
+    return true;
+}
+
+function getPossibleMoves(chip, dice, table, scheme) {
+
+    if (!chip || !dice)
+        return [];
+        
+    let chipCell = scheme[chip.position];
+    let currentPlayer = table.game.playersOrder[table.game.turn];
+    let result = [];
+
+    if (dice === 1 && chipCell.links.for1 && getPlayerFromCell(table, chipCell.links.for1) !== currentPlayer)    
+        result.push(chipCell.links.for1);
+
+    if (dice === 3 && chipCell.links.for3 && getPlayerFromCell(table, chipCell.links.for3) !== currentPlayer) 
+        result.push(chipCell.links.for3);
+
+    if (dice === 6 && chipCell.links.for6)
+        result.push(chipCell.links.for6);
+
+    if (!chip.isAtBase) {
+        let current = chipCell;
+        let canMove = true;
+
+        if (current.isSH) {
+            if (scheme[current.links.outOfSH].chips.length)
+                return [];
+            else 
+                current = scheme[current.links.outOfSH];
+        }
+
+        for (let i = 1; i <= dice; i++) {
+            let toFinish = scheme[current.links["toFinish" + currentPlayer]];
+            if (toFinish && !toFinish.chips.length) {
+                for (let k = i + 1; k <= dice; k++) {
+                    toFinish = scheme[toFinish.links.next];
+                    if (!toFinish || toFinish.chips.length)
+                        break;
+                }
+                if (toFinish) result.push(toFinish.id);
+            }
+            current = scheme[current.links.next];
+            if (!current) {
+                canMove = false;
+                break;
+            }
+            if (current.chips.length && i !== dice) {
+                canMove = false;
+                break;
+            } else if (current.chips.length && i === dice) {
+                if (getPlayerFromCell(table, current.id) === currentPlayer) {
+                    canMove = false;
+                    break;
+                }
+            }
+        }
+
+        if (canMove) {
+            result.push(current.id);
+
+            if (current.links.end && getPlayerFromCell(table, current.links.end) !== currentPlayer)
+                result.push(current.links.end);
+
+            if (current.links.toSH && !scheme[current.links.toSH].chip)
+                result.push(current.links.toSH);
+        }
+    }
+    
+    return result;
+}
 
 function nextTurn(tableId, socketId) {
     let table = tables.findById(tableId);
@@ -233,16 +325,6 @@ function nextTurn(tableId, socketId) {
     if (!gamePlayer) return;
     if (gamePlayerIndex !== table.game.turn) return;
 
-
-    if (!table.game.diceRolled && !table.game.players[gamePlayerIndex].left && table.game.players[gamePlayerIndex].missedLastTurn) {
-        playerDisconnected(table, socketId);
-        io.to(socketId).emit('removed');
-    }
-
-    if (!table.game.diceRolled && !table.game.players[gamePlayerIndex].left) {
-        table.game.players[gamePlayerIndex].missedLastTurn = true;
-    }
-
     table.game.dice = [];
     table.game.turn = findNextTurn(table);
     table.game.diceRolled = false;
@@ -252,9 +334,8 @@ function nextTurn(tableId, socketId) {
 
 function moveChipOnRoute(table, chip, route, diceNum) {
     table.game.dice[diceNum] = undefined;
-
     io.in(table.id).emit("player-made-move", {playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum});
-    
+
     for (let i = 0; i < route.length; i++) {
         moveChipToCell(table, chip, route[i]);  
         if (i === route.length - 1) {
@@ -263,7 +344,44 @@ function moveChipOnRoute(table, chip, route, diceNum) {
             }
         }      
     }
+}
+function diceRolledHandler(data) {
+    let table = tables.findById(data.tableId);
+    if (!table || !table.game) {
+        this.emit("dice-rolled", {error: "404: Игра не найдена."});
+        return;
+    }
 
+    let player = tables.findPlayer(data.tableId, this.id);
+    if (!player) {
+        this.emit("dice-rolled", {error: "Игрок не участвует в игре!"});
+        return;
+    }
+
+    if (tables.indexOfGamePlayer(table.id, this.id) !== table.game.turn) {
+        this.emit("dice-rolled", {error: "Не ваш ход!"});
+        return;
+    }
+
+    if (table.game.diceRolled && !table.game.doublesStreak) {
+        this.emit("dice-rolled", {error: "Кубики уже брошены!"});
+        return;
+    }
+
+    let dice = [];
+    
+    dice[0] = data.dice[0] || Math.ceil(Math.random() * 6);
+    dice[1] = data.dice[1] || Math.ceil(Math.random() * 6);
+    
+    if (dice[0] === dice[1]) {
+        table.game.doublesStreak = table.game.doublesStreak === 2 ? 0 : table.game.doublesStreak + 1;
+    } else {
+        table.game.doublesStreak = 0;
+    }
+
+    table.game.dice = dice;
+    table.game.diceRolled = true;
+    io.in(data.tableId).emit("dice-rolled", {dice});
 }
 function gameWon(table, playerNum) {
     let results = table.players.map((pl, i) => { 
@@ -398,6 +516,9 @@ function countDown(table, turnOff) {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players});
+            // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][2], ['game_cell47'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][3], ['game_cell48'], 'test');
         }, 5000)
     }
 }
