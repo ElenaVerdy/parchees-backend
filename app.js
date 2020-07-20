@@ -218,8 +218,10 @@ function autoMove(table, gamePlayerIndex) {
             else
                 return nextTurn(table.id, this.id);
         } else {
-            if (!makeRandomMove.call(this, table, gamePlayerIndex))
-                return nextTurn(table.id, this.id);
+            if (!makeRandomMove.call(this, table, gamePlayerIndex)) {
+                if (!table.game.doublesStreak)
+                    return nextTurn(table.id, this.id);
+            }
         }
     }
     autoMove.call(this, table, table.game.turn);
@@ -240,6 +242,7 @@ function makeRandomMove(table, gamePlayerIndex) {
         table.game.dice[0] = table.game.dice[1] = undefined;
         return false;
     }
+    console.log(possibleMoves)
     let move = possibleMoves[(Math.random() * possibleMoves.length) ^ 0];
 
     playerMadeMove.call(this, {tableId: table.id, yourTurn: gamePlayerIndex, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
@@ -282,8 +285,9 @@ function getPossibleMoves(chip, dice, table, scheme) {
                     toFinish = scheme[toFinish.links.next];
                     if (!toFinish || toFinish.chips.length)
                         break;
+
+                    if (k === dice && toFinish) result.push(toFinish.id);
                 }
-                if (toFinish) result.push(toFinish.id);
             }
             current = scheme[current.links.next];
             if (!current) {
