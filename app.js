@@ -127,7 +127,6 @@ io.on("connection", socket => {
         let rooms = Object.keys(socket.rooms);
 
         rooms.forEach( room =>{
-            
             if (room.slice(0, 2) !== "t_") return;
 
             let table = tables.findById(room);
@@ -137,46 +136,24 @@ io.on("connection", socket => {
         })
     });
 
-    socket.on("roll-dice", diceRolledHandler.bind(socket));
+    socket.on("roll-dice", rollDice.bind(socket));
 
-    socket.on("finish-turn", data => nextTurn(data.tableId, socket.id));
+    socket.on("finish-turn", data => nextTurn.call(socket, data.tableId));
     
     socket.on("ready", (data) => {
-        
         let table = tables.findById(data.tableId);
         if (!table) return;
-        
+
         let player = tables.findPlayer(data.tableId, socket.id);
         if (!player) return;
-        
+
         player.ready = data.ready;
         io.in(table.id).emit("update-players", {players: table.players});
-        
+
         updateCountDown(table.id);
     });
 
     socket.on("chip-moved", playerMadeMove.bind(socket));
-    socket.on("timed-out", data => {
-        let table = tables.findById(data.tableId);
-        if (!table || !table.game) return;
-
-        let gamePlayerIndex = tables.indexOfGamePlayer(data.tableId, socket.id);
-        let gamePlayer = table.game.players[gamePlayerIndex];
-
-        if (!gamePlayer) return;
-        if (gamePlayerIndex !== table.game.turn) return;
-
-        if (!table.game.diceRolled && !table.game.players[gamePlayerIndex].left && table.game.players[gamePlayerIndex].missedLastTurn) {
-            playerDisconnected(table, socket.id);
-            io.to(socket.id).emit('removed');
-        }
-    
-        if (!table.game.diceRolled && !table.game.players[gamePlayerIndex].left) {
-            // table.game.players[gamePlayerIndex].missedLastTurn = true;
-        }
-        table.game.autoMove = true;
-        autoMove.call(socket, table, gamePlayerIndex);
-    });
 })
 
 function playerMadeMove(data) {
@@ -207,45 +184,64 @@ function playerMadeMove(data) {
         this.emit("player-made-move", {error: "Can't build route"});
     }
 }
+    // socket.on("timed-out", data => {
+    //     let table = tables.findById(data.tableId);
+    //     if (!table || !table.game) return;
 
-function autoMove(table, gamePlayerIndex) {
+    //     let gamePlayerIndex = ;
+    //     let gamePlayer = table.game.players[gamePlayerIndex];
+
+    //     if (!gamePlayer) return;
+    //     if (gamePlayerIndex !== table.game.turn) return;
+
+    //     
+    //     autoMove.call(socket, table);
+    // });
+function autoMove(table) {
+    let socket = io.sockets.connected[table.players[table.game.turn].id];
+    if (!socket) return;
     if (!table.game.diceRolled) {
-        diceRolledHandler.call(this, {tableId: table.id, dice: []});
+        let gamePlayerIndex = tables.indexOfGamePlayer(table.id, socket.id);
+        if (table.game.players[gamePlayerIndex].missedTurn) {
+            return playerDisconnected(table, socket.id);
+        } else {
+            // table.game.players[gamePlayerIndex].missedTurn = true;
+        }
+        rollDice.call(socket, {tableId: table.id, dice: []}, true);
     } else {
         if (!table.game.dice[0] && !table.game.dice[1]) {
             if (table.game.doublesStreak)
-                diceRolledHandler.call(this, {tableId: table.id, dice: []});
+                rollDice.call(socket, {tableId: table.id, dice: []}, true);
             else
-                return nextTurn(table.id, this.id);
+                return nextTurn.call(socket, table.id);
         } else {
-            if (!makeRandomMove.call(this, table, gamePlayerIndex)) {
+            if (!makeRandomMove.call(socket, table)) {
                 if (!table.game.doublesStreak)
-                    return nextTurn(table.id, this.id);
+                    return nextTurn.call(socket, table.id);
             }
         }
     }
-    autoMove.call(this, table, table.game.turn);
+    autoMove(table);
 }
 
-function makeRandomMove(table, gamePlayerIndex) {
+function makeRandomMove(table) {
     let dice = table.game.dice;
     let possibleMoves = [];
     if (dice[0]) 
         [1, 2, 3, 4].forEach(i => {
-            getPossibleMoves(table.game.chips[table.game.playersOrder[gamePlayerIndex]][i], dice[0], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '0', chipNum: i, targetId: k}));
+            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[0], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '0', chipNum: i, targetId: k}));
         });
     if (dice[1]) 
         [1, 2, 3, 4].forEach(i => {
-            getPossibleMoves(table.game.chips[table.game.playersOrder[gamePlayerIndex]][i], dice[1], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '1', chipNum: i, targetId: k}));
+            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[1], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '1', chipNum: i, targetId: k}));
         });
     if (!possibleMoves.length) {
         table.game.dice[0] = table.game.dice[1] = undefined;
         return false;
     }
-    console.log(possibleMoves)
     let move = possibleMoves[(Math.random() * possibleMoves.length) ^ 0];
 
-    playerMadeMove.call(this, {tableId: table.id, yourTurn: gamePlayerIndex, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
+    playerMadeMove.call(this, {tableId: table.id, yourTurn: table.game.turn, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
     return true;
 }
 
@@ -311,7 +307,7 @@ function getPossibleMoves(chip, dice, table, scheme) {
             if (current.links.end && getPlayerFromCell(table, current.links.end) !== currentPlayer)
                 result.push(current.links.end);
 
-            if (current.links.toSH && !scheme[current.links.toSH].chip)
+            if (current.links.toSH && !scheme[current.links.toSH].chips.length)
                 result.push(current.links.toSH);
         }
     }
@@ -319,26 +315,35 @@ function getPossibleMoves(chip, dice, table, scheme) {
     return result;
 }
 
-function nextTurn(tableId, socketId) {
+function nextTurn(tableId, socketId = null) {
+    let error, gamePlayerIndex, gamePlayer;
     let table = tables.findById(tableId);
-    if (!table || !table.game) return;
-    
-    let gamePlayerIndex = tables.indexOfGamePlayer(tableId, socketId);
-    let gamePlayer = table.game.players[gamePlayerIndex];
-    
-    if (!gamePlayer) return;
-    if (gamePlayerIndex !== table.game.turn) return;
+    (function(){
+        if (!table || !table.game)
+            return error = "404: Игра не найдена.";
+        
+        gamePlayerIndex = tables.indexOfGamePlayer(tableId, socketId || this.id);
+        gamePlayer = table.game.players[gamePlayerIndex];
+        
+        if (!gamePlayer) return error = "Игрок не участвует в игре!";
+        if (gamePlayerIndex !== table.game.turn) return error = "Не ваш ход!";
+    }).call(this);
+
+    if (error) return io.to(socketId || this.id).emit("dice-rolled", { error });
 
     table.game.dice = [];
     table.game.turn = findNextTurn(table);
     table.game.diceRolled = false;
-
-    io.in(table.id).emit("next-turn", {turn: table.game.turn});
+    clearTimeout(timers[tableId]);
+    timers[tableId] = setTimeout(autoMove.bind(null, table), 10000);
+    table.game.actionCount = table.game.actionCount + 1;
+    io.in(table.id).emit("next-turn", {turn: table.game.turn, actionCount: table.game.actionCount});
 }
 
 function moveChipOnRoute(table, chip, route, diceNum) {
     table.game.dice[diceNum] = undefined;
-    io.in(table.id).emit("player-made-move", {playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum});
+    table.game.actionCount = table.game.actionCount + 1;
+    io.in(table.id).emit("player-made-move", {playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum, actionCount: table.game.actionCount});
 
     for (let i = 0; i < route.length; i++) {
         moveChipToCell(table, chip, route[i]);  
@@ -349,28 +354,25 @@ function moveChipOnRoute(table, chip, route, diceNum) {
         }      
     }
 }
-function diceRolledHandler(data) {
+function rollDice(data, auto) {
     let table = tables.findById(data.tableId);
-    if (!table || !table.game) {
-        this.emit("dice-rolled", {error: "404: Игра не найдена."});
-        return;
-    }
+    let error, player;
+    (function() {
+        if (!table || !table.game)
+            return error = "404: Игра не найдена.";
 
-    let player = tables.findPlayer(data.tableId, this.id);
-    if (!player) {
-        this.emit("dice-rolled", {error: "Игрок не участвует в игре!"});
-        return;
-    }
+        player = tables.findPlayer(data.tableId, this.id);
+        if (!player)
+            return error = "Игрок не участвует в игре!";
 
-    if (tables.indexOfGamePlayer(table.id, this.id) !== table.game.turn) {
-        this.emit("dice-rolled", {error: "Не ваш ход!"});
-        return;
-    }
+        if (tables.indexOfGamePlayer(table.id, this.id) !== table.game.turn)
+            return error = "Не ваш ход!";
 
-    if (table.game.diceRolled && !table.game.doublesStreak) {
-        this.emit("dice-rolled", {error: "Кубики уже брошены!"});
-        return;
-    }
+        if (table.game.diceRolled && !table.game.doublesStreak)
+            return error = "Кубики уже брошены!";
+    }).call(this);
+
+    if (error) return this.emit("dice-rolled", { error });
 
     let dice = [];
     
@@ -385,23 +387,28 @@ function diceRolledHandler(data) {
 
     table.game.dice = dice;
     table.game.diceRolled = true;
-    io.in(data.tableId).emit("dice-rolled", {dice});
+    table.game.actionCount = table.game.actionCount + 1;
+    io.in(data.tableId).emit("dice-rolled", {dice, actionCount: table.game.actionCount});
+    clearTimeout(timers[table.id]);
+    timers[table.id] = setTimeout(autoMove.bind(null, table), 30000);
+    auto || (table.game.players[table.game.turn].missedTurn = false);
 }
 function gameWon(table, playerNum) {
-    let results = table.players.map((pl, i) => { 
+    let results = table.players.map((pl, i) => {
         return {
-            id: pl.id, 
-            name: pl.name, 
-            rank: pl.rank, 
+            id: pl.id,
+            name: pl.name,
+            rank: pl.rank,
             deltaRank: (table.game.playersOrder[i] === playerNum ? 20 : -10),
             isWinner: (table.game.playersOrder[i] === playerNum)
         }
-    })
+    });
 
     table.game.finished = true;
-
-    io.in(table.id).emit("player-won", {results});
-    io.in(table.id).emit('update-players', {players: table.players})
+    table.game.actionCount = table.game.actionCount + 1;
+    clearTimeout(timers[table.id]);
+    io.in(table.id).emit("player-won", {results, actionCount: table.actionCount});
+    io.in(table.id).emit('update-players', {players: table.players});
 }
 function moveChipToCell(table, chip, destination, toBase = false) {
     let scheme = table.game.scheme;
@@ -422,7 +429,6 @@ function moveChipToCell(table, chip, destination, toBase = false) {
 }
 
 function getRoute(table, diceNum, chipNum, cellId) {
-    
     let scheme = table.game.scheme;
     let result = [];
 
@@ -431,19 +437,17 @@ function getRoute(table, diceNum, chipNum, cellId) {
     let chip = table.game.chips[currentPlayer][chipNum];
     let chipCell = scheme[chip.position];
     
-    if (dice === 1 && chipCell.links.for1 && chipCell.links.for1 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer) {
+    if (dice === 1 && chipCell.links.for1 && chipCell.links.for1 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer)
         return [chipCell.links.for1];
-    }
-    
-    if (dice === 3 && chipCell.links.for3 && chipCell.links.for3 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer) {
+
+    if (dice === 3 && chipCell.links.for3 && chipCell.links.for3 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer)
         return [chipCell.links.for3];
-    }
-    if (dice === 6 && chipCell.links.for6 && chipCell.links.for6 === cellId) {
+
+    if (dice === 6 && chipCell.links.for6 && chipCell.links.for6 === cellId)
         return [chipCell.links.for6];
-    }
-    
+
     let route = [];
-    
+
     if (!chip.isAtBase) {
         let current = chipCell;
         let canMove = true;
@@ -482,8 +486,6 @@ function getRoute(table, diceNum, chipNum, cellId) {
             result = route;
         }
     }
-    if (!route.length)
-        console.log(dice, currentPlayer, chip, cellId)
     return result;
 }
 
@@ -510,16 +512,15 @@ function findNextTurn(table) {
   
 function countDown(table, turnOff) {
     clearTimeout(timers[table.id]);
-    delete timers[table.id];
     io.in(table.id).emit("all-players-ready", {cancel: true}); 
-    
     
     if (!turnOff) {
         io.in(table.id).emit("all-players-ready", {cancel: false}); 
         timers[table.id] = setTimeout(() => {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
-            io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players});
+            io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
+            timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
             // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 'test');
             // moveChipOnRoute(table, table.game.chips[1][2], ['game_cell47'], 'test');
             // moveChipOnRoute(table, table.game.chips[1][3], ['game_cell48'], 'test');
@@ -538,6 +539,7 @@ function playerDisconnected(table, socketId) {
     } else {
         if (table.players.length === 1) {
             tables.remove(table.id);
+            io.to(socketId).emit('removed');
         } else {
             tables.removePlayer(table.id, socketId);
             io.in(table.id).emit("update-players", {players: table.players});
@@ -692,11 +694,12 @@ function newGame(players) {
         chips: defaultChipsPositions(getPlayers(players.length)),
         turn: (Math.random() * players.length ^ 0),
         scheme: createScheme(),
-        doublesStreak: 0
+        doublesStreak: 0,
+        actionCount: 0
     };
 
     ret.players.forEach((pl, i) => {
-        pl.missedLastTurn = false;
+        pl.missedTurn = false;
         pl.playerNum = ret.playersOrder[i];
     });
 
