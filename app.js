@@ -75,17 +75,18 @@ const timers = {};
 io.on("connection", socket => {
     socket.on("init", data => {
         socket.userinfo = data;
+        data.name = `${data.last_name} ${data.first_name}`;
         pool
         .query(`SELECT * FROM users WHERE id = ${data.id} limit 1;`)
         .then(res => {
             if (res.rows.length) {
-                socket.emit("init-finished", res.rows[0]);
+                socket.emit("init-finished", { ...res.rows[0], name: data.name});
             } else {
                 pool.query(`INSERT INTO users (id) values (${data.id});`)
                 .then(data => {
                     pool
                     .query(`SELECT * FROM users WHERE id = ${data.id} limit 1;`)
-                    .then(res => socket.emit("init-finished", {...res.rows[0], new: true}))
+                    .then(res => socket.emit("init-finished", {...res.rows[0], name: data.name, new: true}))
                     .catch(err => console.log(err));
                 })
                 .catch(err => console.log(err))
@@ -106,10 +107,10 @@ io.on("connection", socket => {
         let player = {
             id: socket.id,
             ready: false, 
-            name: data.username,
+            name: data.name,
             photo_50: data.photo_50,
             photo_100: data.photo_100,
-            rank: data.rank
+            rating: data.rating
         };
 
         tables.push({id: tableId, players: [player], chat: []});
@@ -130,10 +131,10 @@ io.on("connection", socket => {
         table.players.push({
             id: socket.id,
             ready: false,
-            name: data.username,
+            name: data.name,
             photo_50: data.photo_50,
             photo_100: data.photo_100,
-            rank: data.rank
+            rating: data.rating
         });
         socket.emit("connect-to", {id: table.id, players: table.players, tableId: table.id});
         socket.join(table.id);
@@ -447,7 +448,7 @@ function gameWon(table, playerNum) {
         return {
             id: pl.id,
             name: pl.name,
-            rank: pl.rank,
+            rating: pl.rating,
             deltaRank: (table.game.playersOrder[i] === playerNum ? 20 : -10),
             isWinner: (table.game.playersOrder[i] === playerNum)
         }
