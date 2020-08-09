@@ -1,9 +1,11 @@
-const express = require('express');
-const app = express();
-const server = app.listen(process.env.PORT || 8000, () => console.log(`Listening on port ${process.env.PORT || 8000}!`));
-const io = require("socket.io")(server);
-const cloneDeep = require('lodash.clonedeep');
-
+const express       = require('express');
+const censor        = require('./censor.js');
+const app           = express();
+const server        = app.listen(process.env.PORT || 8000, () => console.log(`Listening on port ${process.env.PORT || 8000}!`));
+const { Pool }      = require('pg');
+const io            = require("socket.io")(server);
+const cloneDeep     = require('lodash.clonedeep');
+const commonChat    = [];
 app.use(express.static(__dirname + '/public'));
 
 app.use(function(req, res, next) { 
@@ -13,10 +15,9 @@ app.use(function(req, res, next) {
     next();
 });
 //io.set('origins', 'https://parchees-82bf1.web.app/');
-
-app.get("/test", (req, res)=>{
-    res.end("test indeed")
-})
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/parcheesi"
+});
 
 const tables = [];
 tables.remove = function(tableId) {
@@ -33,14 +34,14 @@ tables.findById = function(id) {return this.find(table => table.id === id)}
 tables.removePlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
 
-    if (!table) 
+    if (!table)
         return false;
-    
+
     let player = table.players.find(player => player.id === socketId);
 
     if (!player)
         return false;
-        
+
     table.players.splice(table.players.indexOf(player), 1);
 
     return true;
@@ -48,17 +49,17 @@ tables.removePlayer = function(tableId, socketId) {
 tables.findPlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
 
-    if (!table) 
+    if (!table)
         return false;
     
     let player = table.players.find(player => player.id === socketId);
 
-    return player || false; 
+    return player || false;
 }
 tables.indexOfGamePlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
     
-    if (!table || !table.game) 
+    if (!table || !table.game)
         return -1;
 
     let player = table.game.players.find(player => player.id === socketId);
@@ -72,19 +73,38 @@ tables.indexOfGamePlayer = function(tableId, socketId) {
 const timers = {};
 
 io.on("connection", socket => {
-    
+    socket.on("init", data => {
+        socket.userinfo = data;
+        pool
+        .query(`SELECT * FROM users WHERE id = ${data.id} limit 1;`)
+        .then(res => {
+            if (res.rows.length) {
+                socket.emit("init-finished", res.rows[0]);
+            } else {
+                pool.query(`INSERT INTO users (id) values (${data.id});`)
+                .then(data => {
+                    pool
+                    .query(`SELECT * FROM users WHERE id = ${data.id} limit 1;`)
+                    .then(res => socket.emit("init-finished", {...res.rows[0], new: true}))
+                    .catch(err => console.log(err));
+                })
+                .catch(err => console.log(err))
+            }
+        })
+        .catch(err => console.error('Error executing query', err.stack));
+    });
     socket.on("get-tables-request", () => {
         let availableTables = tables.filter(i => {
             return i.players.length !== 4 && (!i.game || i.game.finished);
         })
         .map(table => {return {tableId: table.id, players: table.players}});
         socket.emit("update-tables", availableTables);
-    })
+    });
 
     socket.on("new-table", data => {
         let tableId = "t_" + (Math.random() * 100000000 ^ 0);
         let player = {
-            id: socket.id, 
+            id: socket.id,
             ready: false, 
             name: data.username,
             photo_50: data.photo_50,
@@ -92,7 +112,7 @@ io.on("connection", socket => {
             rank: data.rank
         };
 
-        tables.push({id: tableId, players: [player]});
+        tables.push({id: tableId, players: [player], chat: []});
 
         socket.emit("connect-to", {id: tableId, players: [player]});
         socket.join(tableId);
@@ -117,6 +137,7 @@ io.on("connection", socket => {
         });
         socket.emit("connect-to", {id: table.id, players: table.players, tableId: table.id});
         socket.join(table.id);
+        socket.emit("new-msg", { room: data.id, old: table.chat });
         io.in(table.id).emit("update-players", {players: table.players});
         
         updateCountDown(table.id)
@@ -154,6 +175,47 @@ io.on("connection", socket => {
     });
 
     socket.on("chip-moved", playerMadeMove.bind(socket));
+    socket.on("reset-timer", data => {
+        let table = tables.findById(data.tableId);
+        if (!table) {
+            socket.emit("err", {error: "game not found"});
+            return;
+        }
+        let player = tables.findPlayer(data.tableId, socket.id);
+        if (!player) {
+            socket.emit("err", {error: "You are not in the game"});
+            return;
+        }
+        if (data.turn !== table.game.turn) {
+            socket.emit("err", {error: "not your turn"});
+            return;
+        }
+        clearTimeout(timers[table.id]);
+        timers[table.id] = setTimeout(autoMove.bind(null, table), 10000);
+    });
+    socket.on("send-msg", data => {
+        let chat;
+
+        if (data.room === 'main') {
+            chat = commonChat;
+        } else {
+            let table = tables.findById(data.room);
+            if (!table) return;
+            if (!table.players.find(pl => socket.id === pl.id)) return;
+
+            chat = table.chat;
+        }
+        data.text = censor(data.text);
+        chat.unshift({player: data.player, text: data.text});
+        if (data.room === 'main') {
+            io.emit("new-msg", data)
+        } else {
+            io.in(data.room).emit("new-msg", data);
+        }
+
+        if (chat.length > 20) chat.splice(20);
+    });
+    socket.on("get-common-msgs", () => {socket.emit("new-msg", { room: 'main', old: commonChat })} );
 })
 
 function playerMadeMove(data) {
@@ -184,24 +246,12 @@ function playerMadeMove(data) {
         this.emit("player-made-move", {error: "Can't build route"});
     }
 }
-    // socket.on("timed-out", data => {
-    //     let table = tables.findById(data.tableId);
-    //     if (!table || !table.game) return;
-
-    //     let gamePlayerIndex = ;
-    //     let gamePlayer = table.game.players[gamePlayerIndex];
-
-    //     if (!gamePlayer) return;
-    //     if (gamePlayerIndex !== table.game.turn) return;
-
-    //     
-    //     autoMove.call(socket, table);
-    // });
 function autoMove(table) {
     let socket = io.sockets.connected[table.players[table.game.turn].id];
     if (!socket) return;
     if (!table.game.diceRolled) {
         let gamePlayerIndex = tables.indexOfGamePlayer(table.id, socket.id);
+        if (!~gamePlayerIndex) return console.log('autoMove: player is not in game');
         if (table.game.players[gamePlayerIndex].missedTurn) {
             return playerDisconnected(table, socket.id);
         } else {
@@ -223,7 +273,6 @@ function autoMove(table) {
     }
     autoMove(table);
 }
-
 function makeRandomMove(table) {
     let dice = table.game.dice;
     let possibleMoves = [];
@@ -521,9 +570,9 @@ function countDown(table, turnOff) {
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
             timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
-            // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 'test');
-            // moveChipOnRoute(table, table.game.chips[1][2], ['game_cell47'], 'test');
-            // moveChipOnRoute(table, table.game.chips[1][3], ['game_cell48'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][2], ['game_cell47'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell48'], 'test');
         }, 5000)
     }
 }
