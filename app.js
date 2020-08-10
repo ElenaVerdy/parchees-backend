@@ -74,19 +74,22 @@ const timers = {};
 
 io.on("connection", socket => {
     socket.on("init", data => {
-        socket.userinfo = data;
-        data.name = `${data.last_name} ${data.first_name}`;
+        data.name = `${data.first_name} ${data.last_name}`;
         pool
-        .query(`SELECT * FROM users WHERE id = ${data.id} limit 1;`)
+        .query(`SELECT * FROM users WHERE vk_id = ${data.id} limit 1;`)
         .then(res => {
             if (res.rows.length) {
+                socket.user = { ...res.rows[0], ...data, name: data.name};
                 socket.emit("init-finished", { ...res.rows[0], name: data.name});
             } else {
-                pool.query(`INSERT INTO users (id) values (${data.id});`)
+                pool.query(`INSERT INTO users (vk_id) values (${data.id});`)
                 .then(data => {
                     pool
-                    .query(`SELECT * FROM users WHERE id = ${data.id} limit 1;`)
-                    .then(res => socket.emit("init-finished", {...res.rows[0], name: data.name, new: true}))
+                    .query(`SELECT * FROM users WHERE vk_id = ${data.id} limit 1;`)
+                    .then(res => {
+                        socket.user = { ...res.rows[0], ...data, name: data.name, new: true };
+                        socket.emit("init-finished", { ...res.rows[0], name: data.name, new: true });
+                    })
                     .catch(err => console.log(err));
                 })
                 .catch(err => console.log(err))
@@ -98,7 +101,7 @@ io.on("connection", socket => {
         let availableTables = tables.filter(i => {
             return i.players.length !== 4 && (!i.game || i.game.finished);
         })
-        .map(table => {return {tableId: table.id, players: table.players}});
+        .map(table => { return { tableId: table.id, players: table.players, rating: table.rating }; });
         socket.emit("update-tables", availableTables);
     });
 
@@ -106,14 +109,15 @@ io.on("connection", socket => {
         let tableId = "t_" + (Math.random() * 100000000 ^ 0);
         let player = {
             id: socket.id,
+            vk_id: socket.user.vk_id,
             ready: false, 
-            name: data.name,
-            photo_50: data.photo_50,
-            photo_100: data.photo_100,
-            rating: data.rating
+            name: socket.user.name,
+            photo_50: socket.user.photo_50,
+            photo_100: socket.user.photo_100,
+            rating: socket.user.rating
         };
 
-        tables.push({id: tableId, players: [player], chat: []});
+        tables.push({id: tableId, players: [player], rating: socket.user.rating, chat: []});
 
         socket.emit("connect-to", {id: tableId, players: [player]});
         socket.join(tableId);
@@ -131,16 +135,17 @@ io.on("connection", socket => {
         table.players.push({
             id: socket.id,
             ready: false,
-            name: data.name,
-            photo_50: data.photo_50,
-            photo_100: data.photo_100,
-            rating: data.rating
+            name: socket.user.name,
+            photo_50: socket.user.photo_50,
+            photo_100: socket.user.photo_100,
+            vk_id: socket.user.vk_id,
+            rating: socket.user.rating
         });
         socket.emit("connect-to", {id: table.id, players: table.players, tableId: table.id});
         socket.join(table.id);
         socket.emit("new-msg", { room: data.id, old: table.chat });
         io.in(table.id).emit("update-players", {players: table.players});
-        
+        updateRating(table);
         updateCountDown(table.id)
     })
 
@@ -192,7 +197,7 @@ io.on("connection", socket => {
             return;
         }
         clearTimeout(timers[table.id]);
-        timers[table.id] = setTimeout(autoMove.bind(null, table), 10000);
+        table.game.finished || (timers[table.id] = setTimeout(autoMove.bind(null, table), 10000));
     });
     socket.on("send-msg", data => {
         let chat;
@@ -248,7 +253,7 @@ function playerMadeMove(data) {
     }
 }
 function autoMove(table) {
-    let socket = io.sockets.connected[table.players[table.game.turn].id];
+    let socket = io.sockets.connected[table.game.players[table.game.turn].id];
     if (!socket) return;
     if (!table.game.diceRolled) {
         let gamePlayerIndex = tables.indexOfGamePlayer(table.id, socket.id);
@@ -444,21 +449,70 @@ function rollDice(data, auto) {
     auto || (table.game.players[table.game.turn].missedTurn = false);
 }
 function gameWon(table, playerNum) {
-    let results = table.players.map((pl, i) => {
+    let defaultCh = defaultChange(table.game.players.length);
+    table.game.players.forEach((gamePlayer, i) => {
+        gamePlayer.won = table.game.playersOrder[i] === playerNum;
+        if (gamePlayer.left || gamePlayer.won) return;
+        gamePlayer.movesToFinish = getPlayerCellsToFinish(table, playerNum);
+    });
+    
+    pool.query(`SELECT * FROM users WHERE vk_id IN (${table.game.players.map(pl => pl.vk_id).join()})`)
+    .then(res => {
+        res.rows.forEach(row => table.game.players.find(item => item.vk_id === row.vk_id).rating = row.rating);
+    });
+
+    let sorted = table.game.players.slice().sort((a, b) => {
+        if (a.left !== b.left) return +a.left - +b.left;
+        if (a.left && b.left) return 0;
+        return b.movesToFinish - a.movesToFinish;
+    });
+
+    sorted.forEach((pl, i) => {
+        if (pl.left) {
+            pl.deltaRank = -30;
+        } else {
+            console.log(table.rating, pl.rating)
+            let dif = (table.rating - pl.rating) / 5;
+            dif = dif > 15 ? 15 : dif;
+            dif = dif < -15 ? -15 : dif;
+            pl.deltaRank = defaultCh[i] + dif;
+        }
+    })
+    let results = sorted.map((pl, i) => {
         return {
             id: pl.id,
             name: pl.name,
             rating: pl.rating,
-            deltaRank: (table.game.playersOrder[i] === playerNum ? 20 : -10),
-            isWinner: (table.game.playersOrder[i] === playerNum)
+            deltaRank: pl.deltaRank,
+            isWinner: pl.won
         }
     });
+    
+    pool.query(`UPDATE users SET 
+                rating = tmp.rating
+                from (values
+                    ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating + pl.deltaRank})`)}
+                ) as tmp(vk_id, rating) where users.vk_id = tmp.vk_id;`)
+    .then(res => {})
+    .catch(err => console.error('Error executing query', err.stack));
 
     table.game.finished = true;
     table.game.actionCount = table.game.actionCount + 1;
     clearTimeout(timers[table.id]);
-    io.in(table.id).emit("player-won", {results, actionCount: table.actionCount});
-    io.in(table.id).emit('update-players', {players: table.players});
+    results.forEach(res => table.game.players.find(pl => pl.id === res.id).rating = res.rating + res.deltaRank);
+    updateRating(table);
+    io.in(table.id).emit("player-won", {results, actionCount: table.game.actionCount});
+    io.in(table.id).emit('update-players', {players: table.game.players});
+}
+function defaultChange(num) {
+    switch (num) {
+        case 2:
+            return [15, -15];
+        case 3:
+            return [15, 0, -15];
+        case 4:
+            return [15, 7, -7, -15];
+    }
 }
 function moveChipToCell(table, chip, destination, toBase = false) {
     let scheme = table.game.scheme;
@@ -571,9 +625,10 @@ function countDown(table, turnOff) {
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
             timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
-            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell46'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][2], ['game_cell47'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell48'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][2], ['game_cell-finish_player1_3'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell-finish_player1_2'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
         }, 5000)
     }
 }
@@ -581,17 +636,15 @@ function countDown(table, turnOff) {
 function playerDisconnected(table, socketId) {
     const game = table.game;
 
-    if (game) {
+    if (game && !game.finished) {
         playerLeftTheGame(table, socketId);
-        if (table.players.length === 1)
-            tables.remove(table.id);
-
     } else {
         if (table.players.length === 1) {
             tables.remove(table.id);
             io.to(socketId).emit('removed');
         } else {
             tables.removePlayer(table.id, socketId);
+            updateRating(table);
             io.in(table.id).emit("update-players", {players: table.players});
             updateCountDown(table.id);
         }
@@ -601,7 +654,7 @@ function playerLeftTheGame(table, socketId) {
     let gamePlayerIndex = tables.indexOfGamePlayer(table.id, socketId);
     let gamePlayer = table.game.players[gamePlayerIndex];
     let playerNum = table.game.playersOrder[gamePlayerIndex];
-    
+
     gamePlayer.left = true;
 
     io.in(table.id).emit("update-players", {playerLeftIndex: gamePlayerIndex});
@@ -616,16 +669,35 @@ function playerLeftTheGame(table, socketId) {
     let player = tables.findPlayer(table.id, socketId);
     let playerLeftIndex = table.players.indexOf(player);
     table.players.splice(playerLeftIndex, 1);
-    
+
     if (isOnePlayerLeft(table)) {
         gameWon(table, playerNum);
     }
 }
-function isOnePlayerLeft(table) {
-    if (!table.game)
-        return;
 
-    return (table.game.players.filter(pl => !pl.left).length === 1);
+function getPlayerCellsToFinish(table, playerNum) {
+    return table.game.chips[playerNum].reduce((sum, chip) => {
+        if (chip.isAtBase) return sum + 54;
+        if (table.game.scheme[chip.position].isFinish) return sum;
+        return sum + getCellsToFinish(table.game.scheme, playerNum, chip.position)
+    }, 0);
+}
+
+function getCellsToFinish(scheme, playerNum, position) {
+    let preFinishCell = "game_cell" + (60 - playerNum * 12);
+    let current = scheme[position];
+    let ret = 0;
+    if (current.isSH)
+        current = scheme[current.links.outOfSH];
+
+    while (current.id !== preFinishCell) {
+        current = scheme[current.links.next];
+        ret++;
+    }
+    return ret;
+}
+function isOnePlayerLeft(table) {
+    return table.game && (table.game.players.filter(pl => !pl.left).length === 1);
 }
 
 function createScheme() {
@@ -822,4 +894,8 @@ function checkForWin(table, playerNum) {
             return false;
     }
     return true;
+}
+
+function updateRating (table){
+    table.rating = table.players.map(pl => pl.rating).reduce((a, b) => a + b, 0) / table.players.length;
 }
