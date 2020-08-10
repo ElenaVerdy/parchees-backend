@@ -56,18 +56,18 @@ tables.findPlayer = function(tableId, socketId) {
 
     return player || false;
 }
-tables.indexOfGamePlayer = function(tableId, socketId) {
+tables.indexOfPlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
     
     if (!table || !table.game)
         return -1;
 
-    let player = table.game.players.find(player => player.id === socketId);
+    let player = table.players.find(player => player.id === socketId);
     
     if (!player)
         return -1;
 
-    return table.game.players.indexOf(player);
+    return table.players.indexOf(player);
 }
 
 const timers = {};
@@ -114,14 +114,15 @@ io.on("connection", socket => {
             name: socket.user.name,
             photo_50: socket.user.photo_50,
             photo_100: socket.user.photo_100,
-            rating: socket.user.rating
+            rating: socket.user.rating,
+            socket
         };
-
-        tables.push({id: tableId, players: [player], rating: socket.user.rating, chat: []});
+        Object.defineProperty(player, "socket", { enumerable: false });
+        tables.push({id: tableId, players: [cloneDeep(player)], rating: socket.user.rating, chat: []});
 
         socket.emit("connect-to", {id: tableId, players: [player]});
         socket.join(tableId);
-        io.in(tableId).emit("update-players", {players: [player], tableId})
+        io.in(tableId).emit("update-players", {players: [player], tableId});
     })
 
     socket.on("connect-to-request", data => {
@@ -131,22 +132,24 @@ io.on("connection", socket => {
             socket.emit("cant-join", {text: "Не получилось подключиться!"});
             return;
         }
-
-        table.players.push({
+        let player = {
             id: socket.id,
             ready: false,
             name: socket.user.name,
             photo_50: socket.user.photo_50,
             photo_100: socket.user.photo_100,
             vk_id: socket.user.vk_id,
-            rating: socket.user.rating
-        });
-        socket.emit("connect-to", {id: table.id, players: table.players, tableId: table.id});
+            rating: socket.user.rating,
+            socket
+        };
+        table.players.push(player);
+        Object.defineProperty(player, "socket", { enumerable: false });
+        socket.emit("connect-to", {id: table.id, players: cloneDeep(table.players), tableId: table.id});
         socket.join(table.id);
         socket.emit("new-msg", { room: data.id, old: table.chat });
-        io.in(table.id).emit("update-players", {players: table.players});
+        io.in(table.id).emit("update-players", {players: cloneDeep(table.players)});
         updateRating(table);
-        updateCountDown(table.id)
+        updateCountDown(table.id);
     })
 
     socket.on("disconnecting", (data) => {
@@ -175,7 +178,7 @@ io.on("connection", socket => {
         if (!player) return;
 
         player.ready = data.ready;
-        io.in(table.id).emit("update-players", {players: table.players});
+        io.in(table.id).emit("update-players", { players: cloneDeep(table.players) });
 
         updateCountDown(table.id);
     });
@@ -253,15 +256,15 @@ function playerMadeMove(data) {
     }
 }
 function autoMove(table) {
-    let socket = io.sockets.connected[table.game.players[table.game.turn].id];
+    let socket = io.sockets.connected[table.players[table.game.turn].id];
     if (!socket) return;
     if (!table.game.diceRolled) {
-        let gamePlayerIndex = tables.indexOfGamePlayer(table.id, socket.id);
-        if (!~gamePlayerIndex) return console.log('autoMove: player is not in game');
-        if (table.game.players[gamePlayerIndex].missedTurn) {
+        let playerIndex = tables.indexOfPlayer(table.id, socket.id);
+        if (!~playerIndex) return console.log('autoMove: player is not in game');
+        if (table.players[playerIndex].missedTurn) {
             return playerDisconnected(table, socket.id);
         } else {
-            // table.game.players[gamePlayerIndex].missedTurn = true;
+            // table.players[playerIndex].missedTurn = true;
         }
         rollDice.call(socket, {tableId: table.id, dice: []}, true);
     } else {
@@ -371,17 +374,17 @@ function getPossibleMoves(chip, dice, table, scheme) {
 }
 
 function nextTurn(tableId, socketId = null) {
-    let error, gamePlayerIndex, gamePlayer;
+    let error, playerIndex, player;
     let table = tables.findById(tableId);
     (function(){
         if (!table || !table.game)
             return error = "404: Игра не найдена.";
         
-        gamePlayerIndex = tables.indexOfGamePlayer(tableId, socketId || this.id);
-        gamePlayer = table.game.players[gamePlayerIndex];
+        playerIndex = tables.indexOfPlayer(tableId, socketId || this.id);
+        player = table.players[playerIndex];
         
-        if (!gamePlayer) return error = "Игрок не участвует в игре!";
-        if (gamePlayerIndex !== table.game.turn) return error = "Не ваш ход!";
+        if (!player) return error = "Игрок не участвует в игре!";
+        if (playerIndex !== table.game.turn) return error = "Не ваш ход!";
     }).call(this);
 
     if (error) return io.to(socketId || this.id).emit("dice-rolled", { error });
@@ -420,7 +423,7 @@ function rollDice(data, auto) {
         if (!player)
             return error = "Игрок не участвует в игре!";
 
-        if (tables.indexOfGamePlayer(table.id, this.id) !== table.game.turn)
+        if (tables.indexOfPlayer(table.id, this.id) !== table.game.turn)
             return error = "Не ваш ход!";
 
         if (table.game.diceRolled && !table.game.doublesStreak)
@@ -446,63 +449,63 @@ function rollDice(data, auto) {
     io.in(data.tableId).emit("dice-rolled", {dice, actionCount: table.game.actionCount});
     clearTimeout(timers[table.id]);
     timers[table.id] = setTimeout(autoMove.bind(null, table), 30000);
-    auto || (table.game.players[table.game.turn].missedTurn = false);
+    auto || (table.players[table.game.turn].missedTurn = false);
 }
 function gameWon(table, playerNum) {
-    let defaultCh = defaultChange(table.game.players.length);
-    table.game.players.forEach((gamePlayer, i) => {
-        gamePlayer.won = table.game.playersOrder[i] === playerNum;
-        if (gamePlayer.left || gamePlayer.won) return;
-        gamePlayer.movesToFinish = getPlayerCellsToFinish(table, playerNum);
+    let defaultCh = defaultChange(table.players.length);
+    table.players.forEach((player, i) => {
+        player.won = table.game.playersOrder[i] === playerNum;
+        if (player.left || player.won) return;
+        player.movesToFinish = getPlayerCellsToFinish(table, playerNum);
     });
-    
-    pool.query(`SELECT * FROM users WHERE vk_id IN (${table.game.players.map(pl => pl.vk_id).join()})`)
+
+    pool.query(`SELECT * FROM users WHERE vk_id IN (${table.players.map(pl => pl.vk_id).join()})`)
     .then(res => {
-        res.rows.forEach(row => table.game.players.find(item => item.vk_id === row.vk_id).rating = row.rating);
-    });
-
-    let sorted = table.game.players.slice().sort((a, b) => {
-        if (a.left !== b.left) return +a.left - +b.left;
-        if (a.left && b.left) return 0;
-        return b.movesToFinish - a.movesToFinish;
-    });
-
-    sorted.forEach((pl, i) => {
-        if (pl.left) {
-            pl.deltaRank = -30;
-        } else {
-            console.log(table.rating, pl.rating)
-            let dif = (table.rating - pl.rating) / 5;
-            dif = dif > 15 ? 15 : dif;
-            dif = dif < -15 ? -15 : dif;
-            pl.deltaRank = defaultCh[i] + dif;
-        }
-    })
-    let results = sorted.map((pl, i) => {
-        return {
-            id: pl.id,
-            name: pl.name,
-            rating: pl.rating,
-            deltaRank: pl.deltaRank,
-            isWinner: pl.won
-        }
-    });
+        res.rows.forEach(row => table.players.find(item => item.vk_id === row.vk_id).rating = row.rating);
+        let sorted = table.players.slice().sort((a, b) => {
+            if (a.left !== b.left) return +b.left - +a.left;
+            if (a.left && b.left) return 0;
+            return a.movesToFinish - b.movesToFinish;
+        });
+        sorted.forEach((pl, i) => {
+            if (pl.left) {
+                pl.deltaRank = -30;
+            } else {
+                let dif = (table.rating - pl.rating) / 5;
+                dif = dif > 15 ? 15 : dif;
+                dif = dif < -15 ? -15 : dif;
+                pl.deltaRank = defaultCh[i] + dif;
+            }
+        })
+        let results = sorted.map((pl, i) => {
+            pl.rating = pl.rating + pl.deltaRank;
+            pl.socket && pl.socket.user && (pl.socket.user.rating = pl.rating);
+            return {
+                id: pl.id,
+                name: pl.name,
+                rating: pl.rating,
+                deltaRank: pl.deltaRank,
+                isWinner: pl.won
+            }
+        });
+        
+        pool.query(`UPDATE users SET 
+                    rating = tmp.rating
+                    from (values
+                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating + pl.deltaRank})`)}
+                    ) as tmp(vk_id, rating) where users.vk_id = tmp.vk_id;`)
+        .then(res => {})
+        .catch(err => console.error('Error executing query', err.stack));
     
-    pool.query(`UPDATE users SET 
-                rating = tmp.rating
-                from (values
-                    ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating + pl.deltaRank})`)}
-                ) as tmp(vk_id, rating) where users.vk_id = tmp.vk_id;`)
-    .then(res => {})
-    .catch(err => console.error('Error executing query', err.stack));
+        table.game.finished = true;
+        table.game.actionCount = table.game.actionCount + 1;
+        clearTimeout(timers[table.id]);
+        results.forEach(res => table.players.find(pl => pl.id === res.id).rating = res.rating + res.deltaRank);
+        updateRating(table);
+        io.in(table.id).emit("player-won", { results, actionCount: table.game.actionCount });
+        io.in(table.id).emit('update-players', { players: cloneDeep(table.players) });
+    });
 
-    table.game.finished = true;
-    table.game.actionCount = table.game.actionCount + 1;
-    clearTimeout(timers[table.id]);
-    results.forEach(res => table.game.players.find(pl => pl.id === res.id).rating = res.rating + res.deltaRank);
-    updateRating(table);
-    io.in(table.id).emit("player-won", {results, actionCount: table.game.actionCount});
-    io.in(table.id).emit('update-players', {players: table.game.players});
 }
 function defaultChange(num) {
     switch (num) {
@@ -607,9 +610,9 @@ function updateCountDown(tableId) {
 function findNextTurn(table) {
     let ret = table.game.turn;
     for (let i = 0; i < 4; i++) {
-        ret = ((ret + 1) === table.game.players.length) ? 0 : ret + 1;
+        ret = ((ret + 1) === table.players.length) ? 0 : ret + 1;
 
-        if (!table.game.players[ret].left)
+        if (!table.players[ret].left)
             return ret;
     }
 }
@@ -651,24 +654,20 @@ function playerDisconnected(table, socketId) {
     }
 }
 function playerLeftTheGame(table, socketId) {
-    let gamePlayerIndex = tables.indexOfGamePlayer(table.id, socketId);
-    let gamePlayer = table.game.players[gamePlayerIndex];
-    let playerNum = table.game.playersOrder[gamePlayerIndex];
+    let playerIndex = tables.indexOfPlayer(table.id, socketId);
+    let player = table.players[playerIndex];
+    let playerNum = table.game.playersOrder[playerIndex];
 
-    gamePlayer.left = true;
+    player.left = true;
 
-    io.in(table.id).emit("update-players", {playerLeftIndex: gamePlayerIndex});
+    io.in(table.id).emit("update-players", {playerLeftIndex: playerIndex});
 
     [1, 2, 3, 4].forEach((chipNum) => {
         moveChipToCell(table, table.game.chips[playerNum][chipNum], `game_chip-base_chip-space_player${playerNum}_num${chipNum}`, true);
     });
-    if (table.game.turn === gamePlayerIndex) {
+    if (table.game.turn === playerIndex) {
         nextTurn(table.id, socketId);
     }
-
-    let player = tables.findPlayer(table.id, socketId);
-    let playerLeftIndex = table.players.indexOf(player);
-    table.players.splice(playerLeftIndex, 1);
 
     if (isOnePlayerLeft(table)) {
         gameWon(table, playerNum);
@@ -697,7 +696,7 @@ function getCellsToFinish(scheme, playerNum, position) {
     return ret;
 }
 function isOnePlayerLeft(table) {
-    return table.game && (table.game.players.filter(pl => !pl.left).length === 1);
+    return table.game && (table.players.filter(pl => !pl.left).length === 1);
 }
 
 function createScheme() {
@@ -810,7 +809,6 @@ function createScheme() {
 function newGame(players) {
     let ret = {
         id: ("id_" + (Math.random() * 100000000 ^ 0)),
-        players: cloneDeep(players),
         playersOrder: getPlayers(players.length),
         dice: [],
         chips: defaultChipsPositions(getPlayers(players.length)),
@@ -820,9 +818,11 @@ function newGame(players) {
         actionCount: 0
     };
 
-    ret.players.forEach((pl, i) => {
+    players.forEach((pl, i) => {
         pl.missedTurn = false;
         pl.playerNum = ret.playersOrder[i];
+        pl.movesToFinish = 0;
+        pl.won = false;
     });
 
     return ret;
@@ -849,30 +849,22 @@ function defaultChipsPositions(playersOrder) {
 
 function getPlayers(num) {
     let playersOrder = [];
-    
-    switch (num) {
 
+    switch (num) {
         case 1:
             playersOrder = [1];
-
             break;
-        
         case 2:
             playersOrder = [1, 3];
             break;
-
         case 3:
             playersOrder = [1, 2, 3];
             break;
-
         case 4:
             playersOrder = [1, 2, 3, 4];
             break;
-
-        default:
-            break;
     }
-        
+
     return playersOrder;
 }
 function getPlayerFromCell(table, cellId) {
