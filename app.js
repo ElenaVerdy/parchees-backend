@@ -507,7 +507,7 @@ function gameWon(table, playerNum) {
         table.players = table.players.filter(pl => !pl.left);
         updateRating(table);
         io.in(table.id).emit("player-won", { results, actionCount: table.game.actionCount });
-        io.in(table.id).emit('update-players', { players: cloneDeep(table.players) });
+        io.in(table.id).emit('update-players', { players: cloneDeep(table.players), afterWin: true });
     });
 
 }
