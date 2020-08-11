@@ -118,7 +118,7 @@ io.on("connection", socket => {
             socket
         };
         Object.defineProperty(player, "socket", { enumerable: false });
-        tables.push({id: tableId, players: [cloneDeep(player)], rating: socket.user.rating, chat: []});
+        tables.push({id: tableId, players: [ player ], rating: socket.user.rating, chat: []});
 
         socket.emit("connect-to", {id: tableId, players: [player]});
         socket.join(tableId);
@@ -471,14 +471,14 @@ function gameWon(table, playerNum) {
             if (pl.left) {
                 pl.deltaRank = -30;
             } else {
-                let dif = (table.rating - pl.rating) / 5;
+                let dif = (table.rating - pl.rating) / 200;
                 dif = dif > 15 ? 15 : dif;
                 dif = dif < -15 ? -15 : dif;
-                pl.deltaRank = defaultCh[i] + dif;
+                pl.deltaRank = Math.round(defaultCh[i] + dif);
             }
         })
         let results = sorted.map((pl, i) => {
-            pl.rating = pl.rating + pl.deltaRank;
+            pl.rating = pl.rating + pl.deltaRank ^ 0;
             pl.socket && pl.socket.user && (pl.socket.user.rating = pl.rating);
             return {
                 id: pl.id,
@@ -492,7 +492,7 @@ function gameWon(table, playerNum) {
         pool.query(`UPDATE users SET 
                     rating = tmp.rating
                     from (values
-                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating + pl.deltaRank})`)}
+                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating})`)}
                     ) as tmp(vk_id, rating) where users.vk_id = tmp.vk_id;`)
         .then(res => {})
         .catch(err => console.error('Error executing query', err.stack));
@@ -500,7 +500,11 @@ function gameWon(table, playerNum) {
         table.game.finished = true;
         table.game.actionCount = table.game.actionCount + 1;
         clearTimeout(timers[table.id]);
-        results.forEach(res => table.players.find(pl => pl.id === res.id).rating = res.rating + res.deltaRank);
+        table.players.forEach(pl => {
+            pl.rating = results.find(res => pl.id === res.id).rating;
+            pl.left || pl.socket.emit("update-user-info", cloneDeep(pl));
+        });
+        table.players = table.players.filter(pl => !pl.left);
         updateRating(table);
         io.in(table.id).emit("player-won", { results, actionCount: table.game.actionCount });
         io.in(table.id).emit('update-players', { players: cloneDeep(table.players) });
