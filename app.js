@@ -83,16 +83,16 @@ io.on("connection", socket => {
                 socket.emit("init-finished", { ...res.rows[0], name: data.name});
             } else {
                 pool.query(`INSERT INTO users (vk_id) values (${data.id});`)
-                .then(data => {
+                .then(() => {
                     pool
                     .query(`SELECT * FROM users WHERE vk_id = ${data.id} limit 1;`)
                     .then(res => {
                         socket.user = { ...res.rows[0], ...data, name: data.name, new: true };
                         socket.emit("init-finished", { ...res.rows[0], name: data.name, new: true });
                     })
-                    .catch(err => console.log(err));
+                    .catch(err => console.log('2',err));
                 })
-                .catch(err => console.log(err))
+                .catch(err => console.log('1',err))
             }
         })
         .catch(err => console.error('Error executing query', err.stack));
@@ -101,11 +101,12 @@ io.on("connection", socket => {
         let availableTables = tables.filter(i => {
             return i.players.length !== 4 && (!i.game || i.game.finished);
         })
-        .map(table => { return { tableId: table.id, players: table.players, rating: table.rating }; });
+        .map(table => { return { tableId: table.id, players: table.players, rating: table.rating, bet: table.bet }; });
         socket.emit("update-tables", availableTables);
     });
 
     socket.on("new-table", data => {
+        if (!data.bet) return;
         let tableId = "t_" + (Math.random() * 100000000 ^ 0);
         let player = {
             id: socket.id,
@@ -118,7 +119,7 @@ io.on("connection", socket => {
             socket
         };
         Object.defineProperty(player, "socket", { enumerable: false });
-        tables.push({id: tableId, players: [ player ], rating: socket.user.rating, chat: []});
+        tables.push({id: tableId, bet: data.bet, players: [ player ], rating: socket.user.rating, chat: []});
 
         socket.emit("connect-to", {id: tableId, players: [player]});
         socket.join(tableId);
@@ -149,7 +150,7 @@ io.on("connection", socket => {
         socket.emit("new-msg", { room: data.id, old: table.chat });
         io.in(table.id).emit("update-players", {players: cloneDeep(table.players)});
         updateRating(table);
-        updateCountDown(table.id);
+        updateCountDown(table);
     })
 
     socket.on("disconnecting", (data) => {
@@ -170,6 +171,15 @@ io.on("connection", socket => {
 
     socket.on("finish-turn", data => nextTurn.call(socket, data.tableId));
     
+    socket.on("leave-table", data => {
+
+        if (!data.tableId) return;
+        let table = tables.findById(data.tableId);
+        if (!table) return socket.emit("err", {error: "game not found"});
+        socket.leave(data.tableId);
+        playerDisconnected(table, socket.id);
+    });
+
     socket.on("ready", (data) => {
         let table = tables.findById(data.tableId);
         if (!table) return;
@@ -180,7 +190,7 @@ io.on("connection", socket => {
         player.ready = data.ready;
         io.in(table.id).emit("update-players", { players: cloneDeep(table.players) });
 
-        updateCountDown(table.id);
+        updateCountDown(table);
     });
 
     socket.on("chip-moved", playerMadeMove.bind(socket));
@@ -461,13 +471,18 @@ function gameWon(table, playerNum) {
 
     pool.query(`SELECT * FROM users WHERE vk_id IN (${table.players.map(pl => pl.vk_id).join()})`)
     .then(res => {
-        res.rows.forEach(row => table.players.find(item => item.vk_id === row.vk_id).rating = row.rating);
+        res.rows.forEach(row => {
+            let player = table.players.find(item => item.vk_id === row.vk_id);
+            player.rating = row.rating;
+            player.chips = row.chips;
+        });
         let sorted = table.players.slice().sort((a, b) => {
             if (a.left !== b.left) return +b.left - +a.left;
             if (a.left && b.left) return 0;
             return a.movesToFinish - b.movesToFinish;
         });
         sorted.forEach((pl, i) => {
+            pl.chips += pl.won ? (table.bet * (table.players.length - 1)) : -table.bet;
             if (pl.left) {
                 pl.deltaRank = -30;
             } else {
@@ -488,12 +503,13 @@ function gameWon(table, playerNum) {
                 isWinner: pl.won
             }
         });
-        
+
         pool.query(`UPDATE users SET 
-                    rating = tmp.rating
+                    rating = tmp.rating,
+                    chips = tmp.chips
                     from (values
-                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating})`)}
-                    ) as tmp(vk_id, rating) where users.vk_id = tmp.vk_id;`)
+                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating}, ${pl.chips})`)}
+                    ) as tmp(vk_id, rating, chips) where users.vk_id = tmp.vk_id;`)
         .then(res => {})
         .catch(err => console.error('Error executing query', err.stack));
     
@@ -600,33 +616,13 @@ function getRoute(table, diceNum, chipNum, cellId) {
     return result;
 }
 
-function updateCountDown(tableId) {
-    let table = tables.findById(tableId);
-    
-    if (table.players.length === 1) {
-        io.in(table.id).emit("all-players-ready", {cancel: true});
-        return;
-    }
-    
-    countDown(table, !table.players.every(pl => pl.ready));
-}
-
-function findNextTurn(table) {
-    let ret = table.game.turn;
-    for (let i = 0; i < 4; i++) {
-        ret = ((ret + 1) === table.players.length) ? 0 : ret + 1;
-
-        if (!table.players[ret].left)
-            return ret;
-    }
-}
-  
-function countDown(table, turnOff) {
+function updateCountDown(table) {
+    let turnOff = table.players.length === 1 || !table.players.every(pl => pl.ready);
     clearTimeout(timers[table.id]);
-    io.in(table.id).emit("all-players-ready", {cancel: true}); 
+    io.in(table.id).emit("all-players-ready", {cancel: true});
     
     if (!turnOff) {
-        io.in(table.id).emit("all-players-ready", {cancel: false}); 
+        io.in(table.id).emit("all-players-ready", {cancel: false});
         timers[table.id] = setTimeout(() => {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
@@ -637,6 +633,16 @@ function countDown(table, turnOff) {
             moveChipOnRoute(table, table.game.chips[1][3], ['game_cell-finish_player1_2'], 'test');
             moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
         }, 5000)
+    }
+}
+
+function findNextTurn(table) {
+    let ret = table.game.turn;
+    for (let i = 0; i < 4; i++) {
+        ret = ((ret + 1) === table.players.length) ? 0 : ret + 1;
+
+        if (!table.players[ret].left)
+            return ret;
     }
 }
 
@@ -653,7 +659,7 @@ function playerDisconnected(table, socketId) {
             tables.removePlayer(table.id, socketId);
             updateRating(table);
             io.in(table.id).emit("update-players", {players: table.players});
-            updateCountDown(table.id);
+            updateCountDown(table);
         }
     }
 }
