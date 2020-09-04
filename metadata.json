@@ -1,0 +1,44 @@
+{
+    "cheats": [
+        {
+            "id": "skip",
+            "currency": "money",
+            "price": 5
+        },
+        {
+            "id": "reroll",
+            "currency": "money",
+            "price": 3
+        },
+        {
+            "id": "shield",
+            "currency": "money",
+            "price": 3
+        },
+        {
+            "id": "runaway",
+            "currency": "money",
+            "price": 3
+        },
+        {
+            "id": "no_shortcuts",
+            "currency": "money",
+            "price": 3
+        },
+        {
+            "id": "free_shortcuts",
+            "currency": "money",
+            "price": 3
+        },
+        {
+            "id": "flight",
+            "currency": "money",
+            "price": 3
+        },
+        {
+            "id": "move_back",
+            "currency": "money",
+            "price": 3
+        }
+    ]
+}

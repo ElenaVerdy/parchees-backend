@@ -6,6 +6,8 @@ const { Pool }      = require('pg');
 const io            = require("socket.io")(server);
 const cloneDeep     = require('lodash.clonedeep');
 const commonChat    = [];
+const cheats        = require('./metadata.json').cheats;
+const errText       = "Произошла ошибка!"; 
 app.use(express.static(__dirname + '/public'));
 
 app.use(function(req, res, next) { 
@@ -73,6 +75,10 @@ tables.indexOfPlayer = function(tableId, socketId) {
 const timers = {};
 
 io.on("connection", socket => {
+    socket.use((packet, next) => {
+        if (socket.user || packet[0] === 'init') return next();
+        socket.emit('request-auth');
+    })
     socket.on("init", data => {
         data.name = `${data.first_name} ${data.last_name}`;
         pool
@@ -82,15 +88,10 @@ io.on("connection", socket => {
                 socket.user = { ...res.rows[0], ...data, name: data.name};
                 socket.emit("init-finished", { ...res.rows[0], name: data.name});
             } else {
-                pool.query(`INSERT INTO users (vk_id) values (${data.id});`)
-                .then(() => {
-                    pool
-                    .query(`SELECT * FROM users WHERE vk_id = ${data.id} limit 1;`)
-                    .then(res => {
-                        socket.user = { ...res.rows[0], ...data, name: data.name, new: true };
-                        socket.emit("init-finished", { ...res.rows[0], name: data.name, new: true });
-                    })
-                    .catch(err => console.log('2',err));
+                pool.query(`INSERT INTO users (vk_id) values (${data.id}) returning *;`)
+                .then(resp => {
+                    socket.user = { ...res.rows[0], ...data, name: data.name, new: true };
+                    socket.emit("init-finished", { ...res.rows[0], name: data.name, new: true });
                 })
                 .catch(err => console.log('1',err))
             }
@@ -175,7 +176,7 @@ io.on("connection", socket => {
 
         if (!data.tableId) return;
         let table = tables.findById(data.tableId);
-        if (!table) return socket.emit("err", {error: "game not found"});
+        if (!table) return console.log("game not found");
         socket.leave(data.tableId);
         playerDisconnected(table, socket.id);
     });
@@ -196,19 +197,11 @@ io.on("connection", socket => {
     socket.on("chip-moved", playerMadeMove.bind(socket));
     socket.on("reset-timer", data => {
         let table = tables.findById(data.tableId);
-        if (!table) {
-            socket.emit("err", {error: "game not found"});
-            return;
-        }
+        if (!table) return console.log("game not found");
         let player = tables.findPlayer(data.tableId, socket.id);
-        if (!player) {
-            socket.emit("err", {error: "You are not in the game"});
-            return;
-        }
-        if (data.turn !== table.game.turn) {
-            socket.emit("err", {error: "not your turn"});
-            return;
-        }
+        if (!player) return console.log("You are not in the game");
+        if (data.turn !== table.game.turn) return console.log("not your turn");
+
         clearTimeout(timers[table.id]);
         table.game.finished || (timers[table.id] = setTimeout(autoMove.bind(null, table), 10000));
     });
@@ -227,7 +220,7 @@ io.on("connection", socket => {
         data.text = censor(data.text);
         chat.unshift({player: data.player, text: data.text});
         if (data.room === 'main') {
-            io.emit("new-msg", data)
+            io.emit("new-msg", data);
         } else {
             io.in(data.room).emit("new-msg", data);
         }
@@ -235,8 +228,74 @@ io.on("connection", socket => {
         if (chat.length > 20) chat.splice(20);
     });
     socket.on("get-common-msgs", () => {socket.emit("new-msg", { room: 'main', old: commonChat })} );
-})
+    socket.on("buy-item", handleBuying.bind(socket));
+    socket.on("use-item", data => {
+        let table = tables.findById(data.tableId);
+        let cheat = cheats.find(ch => ch.id === data.cheatId);
+        if (!data || !data.cheatId || !table || (!data.buy && !socket.user[data.cheatId]) || !cheat) return console.log("bad request");
+        let index = tables.indexOfPlayer(data.tableId, socket.id);
+        if (index === -1) return console.log("You are not in the game");
+        if (index !== table.game.turn) return console.log("not your turn");
+        
+        let column = data.buy ? cheat.currency : cheat.id;
+        pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
+        .then(res => {
+            if (!res.rows.length) return socket.emit("err", { text: errText + '123' });
+            socket.user[column] = res.rows[0][column];
+            useItem(socket, table, data);
+        })
+        .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
+    });
+});
 
+function useItem(socket, table, data) {
+    switch (data.cheatId) {
+        case 'skip':
+            nextTurn.call(socket, table.id);
+            break;
+        case 'reroll':
+            rollDice.call(socket, {tableId: table.id, dice: []}, false, true);
+            break;
+        case 'shield':
+        case 'flight':
+            cheatChip(table, data);
+        default:
+            break;
+    }
+    socket.emit("update-user-info", socket.user);
+}
+function cheatChip(table, { player, num, cheatId }) {
+    table.game.cheats.push({ cheatId, player, num, count: 2 });
+    table.game.chips[player][num][cheatId] = true;
+    io.in(table.id).emit("cheat-updated", { player, num, on: true, cheatId });    
+}
+function handleBuying(data) {
+    if (!data || !data.id) return;
+    let cheat = cheats.find(ch => ch.id === data.id);
+    if (!cheat) return;
+
+    pool.query(`UPDATE users set ${data.id} = ${data.id} + 1, ${cheat.currency} = ${cheat.currency} - ${cheat.price} WHERE vk_id = ${this.user.vk_id} returning ${data.id}, ${cheat.currency};`)
+    .then(resp => {
+        const row = resp.rows[0];
+        this.user[data.id] = row[data.id];
+        this.user[cheat.currency] = row[cheat.currency];
+
+        this.emit("update-user-info", this.user);
+    })
+    .catch(() => this.emit("err", { text: errText }));
+}
+function updateCheats(table) {
+    table.game.cheats.forEach((ch, i) => {
+        if (table.game.playersOrder[table.game.turn] !== ch.player) return;
+        ch.count--;
+        if (!ch.count) {
+            if (ch.cheatId === 'shield' || ch.cheatId === 'flight')
+                table.game.chips[ch.player][ch.num][ch.cheatId] = false;
+            io.in(table.id).emit("cheat-updated", { player: ch.player, num: ch.num, on: false, cheatId: ch.cheatId });
+        }
+    });
+    table.game.cheats = table.game.cheats.filter(ch => ch.count);
+}
 function playerMadeMove(data) {
     let table = tables.findById(data.tableId);
     if (!table) {
@@ -297,11 +356,11 @@ function makeRandomMove(table) {
     let possibleMoves = [];
     if (dice[0]) 
         [1, 2, 3, 4].forEach(i => {
-            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[0], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '0', chipNum: i, targetId: k}));
+            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[0], table).forEach(k => possibleMoves.push({diceNum: '0', chipNum: i, targetId: k}));
         });
     if (dice[1]) 
         [1, 2, 3, 4].forEach(i => {
-            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[1], table, table.game.scheme).forEach(k => possibleMoves.push({diceNum: '1', chipNum: i, targetId: k}));
+            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[1], table).forEach(k => possibleMoves.push({diceNum: '1', chipNum: i, targetId: k}));
         });
     if (!possibleMoves.length) {
         table.game.dice[0] = table.game.dice[1] = undefined;
@@ -312,20 +371,29 @@ function makeRandomMove(table) {
     playerMadeMove.call(this, {tableId: table.id, yourTurn: table.game.turn, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
     return true;
 }
-
-function getPossibleMoves(chip, dice, table, scheme) {
-
+function chipCanMove(chip, table, cellId, notFinish) {
+    if (!cellId || !table.game.scheme[cellId]) return false;
+    let toBeEatenId = table.game.scheme[cellId].chips[0];
+    if (!toBeEatenId) return true;
+    if (notFinish) {
+        return chip.flight;
+    } else {
+        let toBeEaten = table.game.chips[toBeEatenId[16]][toBeEatenId[21]];
+        return toBeEaten.player !== chip.player && !toBeEaten.shield;
+    }
+}
+function getPossibleMoves(chip, dice, table) {
+    let scheme = table.game.scheme;
     if (!chip || !dice)
         return [];
         
     let chipCell = scheme[chip.position];
     let currentPlayer = table.game.playersOrder[table.game.turn];
     let result = [];
-
-    if (dice === 1 && chipCell.links.for1 && getPlayerFromCell(table, chipCell.links.for1) !== currentPlayer)    
+    if (dice === 1 && chipCanMove(chip, table, chipCell.links.for1))
         result.push(chipCell.links.for1);
 
-    if (dice === 3 && chipCell.links.for3 && getPlayerFromCell(table, chipCell.links.for3) !== currentPlayer) 
+    if (dice === 3 && chipCanMove(chip, table, chipCell.links.for3))
         result.push(chipCell.links.for3);
 
     if (dice === 6 && chipCell.links.for6)
@@ -336,50 +404,40 @@ function getPossibleMoves(chip, dice, table, scheme) {
         let canMove = true;
 
         if (current.isSH) {
-            if (scheme[current.links.outOfSH].chips.length)
+            if (scheme[current.links.outOfSH].chips.length && !chip.flight)
                 return [];
-            else 
+            else
                 current = scheme[current.links.outOfSH];
         }
 
         for (let i = 1; i <= dice; i++) {
             let toFinish = scheme[current.links["toFinish" + currentPlayer]];
-            if (toFinish && !toFinish.chips.length) {
+            if (toFinish && chipCanMove(chip, table, toFinish.id, true)) {
+                if (i === dice) result.push(toFinish.id);
                 for (let k = i + 1; k <= dice; k++) {
                     toFinish = scheme[toFinish.links.next];
-                    if (!toFinish || toFinish.chips.length)
+                    if (!toFinish || !chipCanMove(chip, table, toFinish.id, true))
                         break;
 
                     if (k === dice && toFinish) result.push(toFinish.id);
                 }
             }
+            canMove = chipCanMove(chip, table, current.links.next, i !== dice);
+            if (!canMove) break;
             current = scheme[current.links.next];
-            if (!current) {
-                canMove = false;
-                break;
-            }
-            if (current.chips.length && i !== dice) {
-                canMove = false;
-                break;
-            } else if (current.chips.length && i === dice) {
-                if (getPlayerFromCell(table, current.id) === currentPlayer) {
-                    canMove = false;
-                    break;
-                }
-            }
         }
 
         if (canMove) {
             result.push(current.id);
 
-            if (current.links.end && getPlayerFromCell(table, current.links.end) !== currentPlayer)
+            if (current.links.end && chipCanMove(chip, table, current.links.end))
                 result.push(current.links.end);
 
             if (current.links.toSH && !scheme[current.links.toSH].chips.length)
                 result.push(current.links.toSH);
         }
     }
-    
+
     return result;
 }
 
@@ -404,14 +462,13 @@ function nextTurn(tableId, socketId = null) {
     table.game.diceRolled = false;
     clearTimeout(timers[tableId]);
     timers[tableId] = setTimeout(autoMove.bind(null, table), 10000);
-    table.game.actionCount = table.game.actionCount + 1;
-    io.in(table.id).emit("next-turn", {turn: table.game.turn, actionCount: table.game.actionCount});
+    updateCheats(table);
+    io.in(table.id).emit("next-turn", {turn: table.game.turn, actionCount: ++table.game.actionCount});
 }
 
 function moveChipOnRoute(table, chip, route, diceNum) {
     table.game.dice[diceNum] = undefined;
-    table.game.actionCount = table.game.actionCount + 1;
-    io.in(table.id).emit("player-made-move", {playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum, actionCount: table.game.actionCount});
+    io.in(table.id).emit("player-made-move", { playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum, actionCount: ++table.game.actionCount, flight: chip.flight});
 
     for (let i = 0; i < route.length; i++) {
         moveChipToCell(table, chip, route[i]);  
@@ -422,7 +479,7 @@ function moveChipOnRoute(table, chip, route, diceNum) {
         }      
     }
 }
-function rollDice(data, auto) {
+function rollDice(data, auto, cheat) {
     let table = tables.findById(data.tableId);
     let error, player;
     (function() {
@@ -436,17 +493,26 @@ function rollDice(data, auto) {
         if (tables.indexOfPlayer(table.id, this.id) !== table.game.turn)
             return error = "Не ваш ход!";
 
-        if (table.game.diceRolled && !table.game.doublesStreak)
+        if (table.game.diceRolled && !table.game.doublesStreak && !cheat)
             return error = "Кубики уже брошены!";
+
+        if (cheat && !table.game.dice[0] && !table.game.dice[1])
+            return error = "Кубики потрачены!";
     }).call(this);
 
     if (error) return this.emit("dice-rolled", { error });
 
     let dice = [];
-    
-    dice[0] = data.dice[0] || Math.ceil(Math.random() * 6);
-    dice[1] = data.dice[1] || Math.ceil(Math.random() * 6);
-    
+    if (cheat) {
+        dice[0] = table.game.dice[0] && Math.ceil(Math.random() * 6);
+        dice[1] = table.game.dice[1] && Math.ceil(Math.random() * 6);
+    } else {
+        dice[0] = data.dice[0] || Math.ceil(Math.random() * 6);
+        dice[1] = data.dice[1] || Math.ceil(Math.random() * 6);
+    }
+
+    if (!dice[0]) dice[0] = null;
+    if (!dice[1]) dice[1] = null;
     if (dice[0] === dice[1]) {
         table.game.doublesStreak = table.game.doublesStreak === 2 ? 0 : table.game.doublesStreak + 1;
     } else {
@@ -455,8 +521,7 @@ function rollDice(data, auto) {
 
     table.game.dice = dice;
     table.game.diceRolled = true;
-    table.game.actionCount = table.game.actionCount + 1;
-    io.in(data.tableId).emit("dice-rolled", {dice, actionCount: table.game.actionCount});
+    io.in(data.tableId).emit("dice-rolled", {dice, actionCount: ++table.game.actionCount, cheat});
     clearTimeout(timers[table.id]);
     timers[table.id] = setTimeout(autoMove.bind(null, table), 30000);
     auto || (table.players[table.game.turn].missedTurn = false);
@@ -500,10 +565,11 @@ function gameWon(table, playerNum) {
                 name: pl.name,
                 rating: pl.rating,
                 deltaRank: pl.deltaRank,
+                deltaChips: pl.won ? (table.bet * (table.players.length - 1)) : -table.bet,
                 isWinner: pl.won
             }
         });
-
+        console.log(`nan is okey`);
         pool.query(`UPDATE users SET 
                     rating = tmp.rating,
                     chips = tmp.chips
@@ -514,7 +580,6 @@ function gameWon(table, playerNum) {
         .catch(err => console.error('Error executing query', err.stack));
     
         table.game.finished = true;
-        table.game.actionCount = table.game.actionCount + 1;
         clearTimeout(timers[table.id]);
         table.players.forEach(pl => {
             pl.rating = results.find(res => pl.id === res.id).rating;
@@ -522,10 +587,9 @@ function gameWon(table, playerNum) {
         });
         table.players = table.players.filter(pl => !pl.left);
         updateRating(table);
-        io.in(table.id).emit("player-won", { results, actionCount: table.game.actionCount });
+        io.in(table.id).emit("player-won", { results, actionCount: ++table.game.actionCount });
         io.in(table.id).emit('update-players', { players: cloneDeep(table.players), afterWin: true });
     });
-
 }
 function defaultChange(num) {
     switch (num) {
@@ -564,10 +628,10 @@ function getRoute(table, diceNum, chipNum, cellId) {
     let chip = table.game.chips[currentPlayer][chipNum];
     let chipCell = scheme[chip.position];
     
-    if (dice === 1 && chipCell.links.for1 && chipCell.links.for1 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer)
+    if (dice === 1 && chipCell.links.for1 === cellId && chipCanMove(chip, table, cellId))
         return [chipCell.links.for1];
 
-    if (dice === 3 && chipCell.links.for3 && chipCell.links.for3 === cellId && getPlayerFromCell(table, cellId) !== currentPlayer)
+    if (dice === 3 && chipCell.links.for3 === cellId && chipCanMove(chip, table, cellId))
         return [chipCell.links.for3];
 
     if (dice === 6 && chipCell.links.for6 && chipCell.links.for6 === cellId)
@@ -581,7 +645,7 @@ function getRoute(table, diceNum, chipNum, cellId) {
         let toFinish = cellId.indexOf('game_cell-finish') !== -1;
 
         if (current.isSH) {
-            if (scheme[current.links.outOfSH].chips.length) {
+            if (scheme[current.links.outOfSH].chips.length && !chip.flight) {
                 return false;
             } else {
                 route.push(current.links.outOfSH);
@@ -597,21 +661,26 @@ function getRoute(table, diceNum, chipNum, cellId) {
 
             if (!current) return false;
 
-            route.push(current.id)
-            
-            if (current.chips.length && i !== dice)
+            canMove = chipCanMove(chip, table, current.id, i !== dice);
+            route.push(current.id);
+
+            if (!canMove) break;
+
+            if (current.chips.length && i !== dice && !chip.flight)
                 return false;
             else if (current.chips.length && i === dice)
-                if (getPlayerFromCell(current.id) === currentPlayer)
+                if (!chipCanMove(chip, table, cellId, true))
                     return false;
         }
-        
+
         if (canMove) {
             if (current.links.end && current.links.end === cellId) route.push(current.links.end);
             if (current.links.toSH && current.links.toSH === cellId) route.push(current.links.toSH);
-            
+
             result = route;
         }
+        if (!result.length) throw new Error(result);
+        if (chip.flight && result.length) result = [result[result.length - 1]];
     }
     return result;
 }
@@ -628,9 +697,10 @@ function updateCountDown(table) {
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
             timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
-            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][2], ['game_cell-finish_player1_3'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell-finish_player1_2'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
+            moveChipOnRoute(table, table.game.chips[3][2], ['game_cell20'], 'test');
+            moveChipOnRoute(table, table.game.chips[3][3], ['game_cell25'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell35'], 'test');
             moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
         }, 5000)
     }
@@ -822,6 +892,7 @@ function newGame(players) {
         playersOrder: getPlayers(players.length),
         dice: [],
         chips: defaultChipsPositions(getPlayers(players.length)),
+        cheats: [],
         turn: (Math.random() * players.length ^ 0),
         scheme: createScheme(),
         doublesStreak: 0,
