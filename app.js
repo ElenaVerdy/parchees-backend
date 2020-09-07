@@ -258,6 +258,8 @@ function useItem(socket, table, data) {
             break;
         case 'shield':
         case 'flight':
+        case 'free_shortcuts':
+        case 'no_shortcuts':
             cheatChip(table, data);
         default:
             break;
@@ -265,9 +267,20 @@ function useItem(socket, table, data) {
     socket.emit("update-user-info", socket.user);
 }
 function cheatChip(table, { player, num, cheatId }) {
-    table.game.cheats.push({ cheatId, player, num, count: 2 });
-    table.game.chips[player][num][cheatId] = true;
-    io.in(table.id).emit("cheat-updated", { player, num, on: true, cheatId });    
+    const chip = table.game.chips[player][num];
+    table.game.cheats.push({ cheatId, player, num, count: getCheatDuration(cheatId) });
+    chip[cheatId] = true;
+    io.in(table.id).emit("cheat-updated", { player, num, on: true, cheatId });
+    if (cheatId === 'no_shortcuts')
+        cheatExpired(table, chip, 'free_shortcuts');
+    if (cheatId === 'free_shortcuts')
+        cheatExpired(table, chip, 'no_shortcuts');
+}
+function getCheatDuration(cheatId) {
+    if (cheatId === 'shield') return 20;
+    if (cheatId === 'free_shortcuts') return 10;
+    if (cheatId === 'flight') return 10;
+    if (cheatId === 'no_shortcuts') return 10;
 }
 function handleBuying(data) {
     if (!data || !data.id) return;
@@ -288,13 +301,15 @@ function updateCheats(table) {
     table.game.cheats.forEach((ch, i) => {
         if (table.game.playersOrder[table.game.turn] !== ch.player) return;
         ch.count--;
-        if (!ch.count) {
-            if (ch.cheatId === 'shield' || ch.cheatId === 'flight')
-                table.game.chips[ch.player][ch.num][ch.cheatId] = false;
-            io.in(table.id).emit("cheat-updated", { player: ch.player, num: ch.num, on: false, cheatId: ch.cheatId });
+        if (!ch.count && (['shield', 'flight', 'free_shortcuts', ].indexOf(ch.cheatId))) {
+            cheatExpired(table, table.game.chips[ch.player][ch.num], ch.cheatId);
         }
     });
     table.game.cheats = table.game.cheats.filter(ch => ch.count);
+}
+function cheatExpired(table, chip, cheatId) {
+    chip[cheatId] && io.in(table.id).emit("cheat-updated", { player: chip.player, num: chip.num, on: false, cheatId });
+    chip[cheatId] = false;
 }
 function playerMadeMove(data) {
     let table = tables.findById(data.tableId);
@@ -312,7 +327,7 @@ function playerMadeMove(data) {
         return;
     }
 
-    if (!table.game.dice[data.diceNum]) {
+    if (!table.game.dice[data.diceNum] && data.diceNum !== false) {
         this.emit("player-made-move", {error: "this dice already used"});
         return;
     }
@@ -354,14 +369,17 @@ function autoMove(table) {
 function makeRandomMove(table) {
     let dice = table.game.dice;
     let possibleMoves = [];
-    if (dice[0]) 
-        [1, 2, 3, 4].forEach(i => {
-            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[0], table).forEach(k => possibleMoves.push({diceNum: '0', chipNum: i, targetId: k}));
-        });
-    if (dice[1]) 
-        [1, 2, 3, 4].forEach(i => {
-            getPossibleMoves(table.game.chips[table.game.playersOrder[table.game.turn]][i], dice[1], table).forEach(k => possibleMoves.push({diceNum: '1', chipNum: i, targetId: k}));
-        });
+
+    [1, 2, 3, 4].forEach(i => {
+        chip = table.game.chips[table.game.playersOrder[table.game.turn]][i];
+        if (dice[0]) getPossibleMoves(chip, dice[0], table).forEach(k => possibleMoves.push({ diceNum: '0', chipNum: i, targetId: k }));
+        if (dice[1]) getPossibleMoves(chip, dice[1], table).forEach(k => possibleMoves.push({ diceNum: '1', chipNum: i, targetId: k }));
+
+        if (!chip.free_shortcuts) return;
+        let start = table.game.scheme[chip.position];
+        if (start.links.for1) possibleMoves.push({ targetId: start.links.for1, chipNum: i, diceNum: false });
+        if (start.links.for3) possibleMoves.push({ targetId: start.links.for3, chipNum: i, diceNum: false });
+    });
     if (!possibleMoves.length) {
         table.game.dice[0] = table.game.dice[1] = undefined;
         return false;
@@ -390,10 +408,10 @@ function getPossibleMoves(chip, dice, table) {
     let chipCell = scheme[chip.position];
     let currentPlayer = table.game.playersOrder[table.game.turn];
     let result = [];
-    if (dice === 1 && chipCanMove(chip, table, chipCell.links.for1))
+    if (!chip.no_shortcuts && dice === 1 && chipCanMove(chip, table, chipCell.links.for1))
         result.push(chipCell.links.for1);
 
-    if (dice === 3 && chipCanMove(chip, table, chipCell.links.for3))
+    if (!chip.no_shortcuts && dice === 3 && chipCanMove(chip, table, chipCell.links.for3))
         result.push(chipCell.links.for3);
 
     if (dice === 6 && chipCell.links.for6)
@@ -430,7 +448,7 @@ function getPossibleMoves(chip, dice, table) {
         if (canMove) {
             result.push(current.id);
 
-            if (current.links.end && chipCanMove(chip, table, current.links.end))
+            if (!chip.no_shortcuts && current.links.end && chipCanMove(chip, table, current.links.end))
                 result.push(current.links.end);
 
             if (current.links.toSH && !scheme[current.links.toSH].chips.length)
@@ -627,11 +645,17 @@ function getRoute(table, diceNum, chipNum, cellId) {
     let currentPlayer = table.game.playersOrder[table.game.turn];
     let chip = table.game.chips[currentPlayer][chipNum];
     let chipCell = scheme[chip.position];
+    if (diceNum === false) {
+        if (!chip.free_shortcuts) return [];
+
+        if (chipCell.links.for1 === cellId) return [ chipCell.links.for1 ];
+        if (chipCell.links.for3 === cellId) return [ chipCell.links.for3 ];
+    }
     
-    if (dice === 1 && chipCell.links.for1 === cellId && chipCanMove(chip, table, cellId))
+    if (!chip.no_shortcuts && dice === 1 && chipCell.links.for1 === cellId && chipCanMove(chip, table, cellId))
         return [chipCell.links.for1];
 
-    if (dice === 3 && chipCell.links.for3 === cellId && chipCanMove(chip, table, cellId))
+    if (!chip.no_shortcuts && dice === 3 && chipCell.links.for3 === cellId && chipCanMove(chip, table, cellId))
         return [chipCell.links.for3];
 
     if (dice === 6 && chipCell.links.for6 && chipCell.links.for6 === cellId)
@@ -674,7 +698,7 @@ function getRoute(table, diceNum, chipNum, cellId) {
         }
 
         if (canMove) {
-            if (current.links.end && current.links.end === cellId) route.push(current.links.end);
+            if (!chip.no_shortcuts && current.links.end && current.links.end === cellId) route.push(current.links.end);
             if (current.links.toSH && current.links.toSH === cellId) route.push(current.links.toSH);
 
             result = route;
@@ -700,7 +724,7 @@ function updateCountDown(table) {
             // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
             moveChipOnRoute(table, table.game.chips[3][2], ['game_cell20'], 'test');
             moveChipOnRoute(table, table.game.chips[3][3], ['game_cell25'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell35'], 'test');
+            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell6'], 'test');
             moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
         }, 5000)
     }
