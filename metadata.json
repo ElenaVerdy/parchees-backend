@@ -16,7 +16,7 @@
             "price": 3
         },
         {
-            "id": "runaway",
+            "id": "cat",
             "currency": "money",
             "price": 3
         },
@@ -36,7 +36,7 @@
             "price": 3
         },
         {
-            "id": "move_back",
+            "id": "luck",
             "currency": "money",
             "price": 3
         }

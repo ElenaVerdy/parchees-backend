@@ -90,8 +90,8 @@ io.on("connection", socket => {
             } else {
                 pool.query(`INSERT INTO users (vk_id) values (${data.id}) returning *;`)
                 .then(resp => {
-                    socket.user = { ...res.rows[0], ...data, name: data.name, new: true };
-                    socket.emit("init-finished", { ...res.rows[0], name: data.name, new: true });
+                    socket.user = { ...resp.rows[0], ...data, name: data.name, new: true };
+                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true });
                 })
                 .catch(err => console.log('1',err))
             }
@@ -122,7 +122,7 @@ io.on("connection", socket => {
         Object.defineProperty(player, "socket", { enumerable: false });
         tables.push({id: tableId, bet: data.bet, players: [ player ], rating: socket.user.rating, chat: []});
 
-        socket.emit("connect-to", {id: tableId, players: [player]});
+        socket.emit("connect-to", {id: tableId, players: [player], bet: data.bet});
         socket.join(tableId);
         io.in(tableId).emit("update-players", {players: [player], tableId});
     })
@@ -146,7 +146,7 @@ io.on("connection", socket => {
         };
         table.players.push(player);
         Object.defineProperty(player, "socket", { enumerable: false });
-        socket.emit("connect-to", {id: table.id, players: cloneDeep(table.players), tableId: table.id});
+        socket.emit("connect-to", {id: table.id, players: cloneDeep(table.players), bet: table.bet});
         socket.join(table.id);
         socket.emit("new-msg", { room: data.id, old: table.chat });
         io.in(table.id).emit("update-players", {players: cloneDeep(table.players)});
@@ -261,7 +261,12 @@ function useItem(socket, table, data) {
         case 'free_shortcuts':
         case 'no_shortcuts':
             cheatChip(table, data);
-        default:
+            break;
+        case 'luck':
+            cheatLuck(table, data);
+            break;
+        case 'cat':
+            cheatCat(socket, table, data);
             break;
     }
     socket.emit("update-user-info", socket.user);
@@ -272,15 +277,35 @@ function cheatChip(table, { player, num, cheatId }) {
     chip[cheatId] = true;
     io.in(table.id).emit("cheat-updated", { player, num, on: true, cheatId });
     if (cheatId === 'no_shortcuts')
-        cheatExpired(table, chip, 'free_shortcuts');
+        cheatExpired(table, 'free_shortcuts', player, num);
     if (cheatId === 'free_shortcuts')
-        cheatExpired(table, chip, 'no_shortcuts');
+        cheatExpired(table, 'no_shortcuts', player, num);
+}
+function cheatCat(socket, table, { player, num, cheatId }) {
+    const chip = table.game.chips[player][num];
+    let start = table.game.scheme[chip.position];
+    if (start.isSH) {
+        if (scheme[start.links.outOfSH].chips.length && !chip.flight)
+            return;
+        else
+            start = scheme[start.links.outOfSH];
+    }
+    let destination = start.links['toFinish' + player] || start.links.next;
+    if (destination) {
+        moveChipOnRoute(table, chip, [destination], false, true);
+    }
+}
+function cheatLuck(table, { cheatId }) {
+    let player = table.game.playersOrder[table.game.turn];
+    table.game.cheats.push({ cheatId, player, count: getCheatDuration(cheatId) });
+    table.players[table.game.turn][cheatId] = true;
 }
 function getCheatDuration(cheatId) {
     if (cheatId === 'shield') return 20;
     if (cheatId === 'free_shortcuts') return 10;
     if (cheatId === 'flight') return 10;
     if (cheatId === 'no_shortcuts') return 10;
+    if (cheatId === 'luck') return 1;
 }
 function handleBuying(data) {
     if (!data || !data.id) return;
@@ -301,15 +326,18 @@ function updateCheats(table) {
     table.game.cheats.forEach((ch, i) => {
         if (table.game.playersOrder[table.game.turn] !== ch.player) return;
         ch.count--;
-        if (!ch.count && (['shield', 'flight', 'free_shortcuts', ].indexOf(ch.cheatId))) {
-            cheatExpired(table, table.game.chips[ch.player][ch.num], ch.cheatId);
-        }
+        if (!ch.count) cheatExpired(table, ch.cheatId, ch.player, ch.num);
     });
     table.game.cheats = table.game.cheats.filter(ch => ch.count);
 }
-function cheatExpired(table, chip, cheatId) {
-    chip[cheatId] && io.in(table.id).emit("cheat-updated", { player: chip.player, num: chip.num, on: false, cheatId });
-    chip[cheatId] = false;
+function cheatExpired(table, cheatId, player, num) {
+    if (num) {
+        let chip = table.game.chips[player][num];
+        chip[cheatId] && io.in(table.id).emit("cheat-updated", { player: chip.player, num: chip.num, on: false, cheatId });
+        chip[cheatId] = false;
+    } else {
+        table.players[table.game.turn][cheatId] = false;
+    }
 }
 function playerMadeMove(data) {
     let table = tables.findById(data.tableId);
@@ -484,9 +512,9 @@ function nextTurn(tableId, socketId = null) {
     io.in(table.id).emit("next-turn", {turn: table.game.turn, actionCount: ++table.game.actionCount});
 }
 
-function moveChipOnRoute(table, chip, route, diceNum) {
+function moveChipOnRoute(table, chip, route, diceNum, forceFlight = false) {
     table.game.dice[diceNum] = undefined;
-    io.in(table.id).emit("player-made-move", { playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum, actionCount: ++table.game.actionCount, flight: chip.flight});
+    io.in(table.id).emit("player-made-move", { playerNum: chip.player, num: chip.num, position: route[route.length - 1], diceNum, actionCount: ++table.game.actionCount, flight: chip.flight || forceFlight });
 
     for (let i = 0; i < route.length; i++) {
         moveChipToCell(table, chip, route[i]);  
@@ -531,6 +559,7 @@ function rollDice(data, auto, cheat) {
 
     if (!dice[0]) dice[0] = null;
     if (!dice[1]) dice[1] = null;
+    if (dice[0] && dice[1] && table.players[table.game.turn].luck) dice[1] = dice[0];
     if (dice[0] === dice[1]) {
         table.game.doublesStreak = table.game.doublesStreak === 2 ? 0 : table.game.doublesStreak + 1;
     } else {
@@ -546,77 +575,76 @@ function rollDice(data, auto, cheat) {
 }
 function gameWon(table, playerNum) {
     let defaultCh = defaultChange(table.players.length);
+    console.log(table.game.playersOrder, playerNum)
     table.players.forEach((player, i) => {
         player.won = table.game.playersOrder[i] === playerNum;
         if (player.left || player.won) return;
         player.movesToFinish = getPlayerCellsToFinish(table, playerNum);
     });
 
-    pool.query(`SELECT * FROM users WHERE vk_id IN (${table.players.map(pl => pl.vk_id).join()})`)
-    .then(res => {
-        res.rows.forEach(row => {
-            let player = table.players.find(item => item.vk_id === row.vk_id);
-            player.rating = row.rating;
-            player.chips = row.chips;
-        });
-        let sorted = table.players.slice().sort((a, b) => {
-            if (a.left !== b.left) return +b.left - +a.left;
-            if (a.left && b.left) return 0;
-            return a.movesToFinish - b.movesToFinish;
-        });
-        sorted.forEach((pl, i) => {
-            pl.chips += pl.won ? (table.bet * (table.players.length - 1)) : -table.bet;
-            if (pl.left) {
-                pl.deltaRank = -30;
-            } else {
-                let dif = (table.rating - pl.rating) / 200;
-                dif = dif > 15 ? 15 : dif;
-                dif = dif < -15 ? -15 : dif;
-                pl.deltaRank = Math.round(defaultCh[i] + dif);
-            }
-        })
-        let results = sorted.map((pl, i) => {
-            pl.rating = pl.rating + pl.deltaRank ^ 0;
-            pl.socket && pl.socket.user && (pl.socket.user.rating = pl.rating);
-            return {
-                id: pl.id,
-                name: pl.name,
-                rating: pl.rating,
-                deltaRank: pl.deltaRank,
-                deltaChips: pl.won ? (table.bet * (table.players.length - 1)) : -table.bet,
-                isWinner: pl.won
-            }
-        });
-        console.log(`nan is okey`);
-        pool.query(`UPDATE users SET 
-                    rating = tmp.rating,
-                    chips = tmp.chips
-                    from (values
-                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.rating}, ${pl.chips})`)}
-                    ) as tmp(vk_id, rating, chips) where users.vk_id = tmp.vk_id;`)
-        .then(res => {})
-        .catch(err => console.error('Error executing query', err.stack));
-    
-        table.game.finished = true;
-        clearTimeout(timers[table.id]);
-        table.players.forEach(pl => {
-            pl.rating = results.find(res => pl.id === res.id).rating;
-            pl.left || pl.socket.emit("update-user-info", cloneDeep(pl));
-        });
-        table.players = table.players.filter(pl => !pl.left);
-        updateRating(table);
-        io.in(table.id).emit("player-won", { results, actionCount: ++table.game.actionCount });
-        io.in(table.id).emit('update-players', { players: cloneDeep(table.players), afterWin: true });
+    let sorted = table.players.slice().sort((a, b) => {
+        if (a.left !== b.left) return +b.left - +a.left;
+        if (a.left && b.left) return 0;
+        return a.movesToFinish - b.movesToFinish;
     });
+    console.log(sorted)
+    sorted.forEach((pl, i) => {
+        pl.deltaBet = pl.won ? (table.bet * (table.players.length - 1)) : -table.bet;
+        if (pl.left) {
+            pl.deltaRank = -30;
+        } else {
+            let dif = (table.rating - pl.rating) / 200;
+            dif = dif > 15 ? 15 : dif;
+            dif = dif < -15 ? -15 : dif;
+            pl.deltaRank = Math.round(defaultCh[i] + dif);
+        }
+    });
+
+    pool.query(`UPDATE users SET 
+                    rating = rating + tmp.delta_rank,
+                    chips = chips + tmp.delta_bet
+                    from (values
+                        ${sorted.map(pl => `(${pl.vk_id}, ${pl.deltaRank}, ${pl.deltaBet})`)}
+                    ) as tmp(vk_id, delta_rank, delta_bet) where users.vk_id = tmp.vk_id returning *;`)
+        .then(res => {
+            let results = sorted.map((pl, i) => {
+                let usersRes = res.rows.find(r => r.vk_id === pl.vk_id);
+                pl.rating = usersRes.rating;
+                pl.chips = usersRes.chips;
+                if (pl.socket && pl.socket.user) {
+                    pl.socket.user.rating = pl.rating;
+                    pl.socket.user.chips = pl.chips;
+                }
+                return {
+                    id: pl.id,
+                    vk_id: pl.vk_id,
+                    name: pl.name,
+                    rating: pl.rating,
+                    deltaRank: pl.deltaRank,
+                    deltaChips: pl.won ? (table.bet * (table.players.length - 1)) : -table.bet,
+                    isWinner: pl.won
+                };
+            });
+            table.game.finished = true;
+            clearTimeout(timers[table.id]);
+            table.players.forEach(pl => {
+                pl.left || pl.socket.emit("update-user-info", cloneDeep(pl));
+            });
+            table.players = table.players.filter(pl => !pl.left);
+            updateRating(table);
+            io.in(table.id).emit("player-won", { results, actionCount: ++table.game.actionCount });
+            io.in(table.id).emit('update-players', { players: cloneDeep(table.players), afterWin: true });
+        })
+        .catch(err => console.error('Error executing query', err.stack));
 }
 function defaultChange(num) {
     switch (num) {
         case 2:
             return [15, -15];
         case 3:
-            return [15, 0, -15];
+            return [17, 0, -17];
         case 4:
-            return [15, 7, -7, -15];
+            return [20, 10, -10, -20];
     }
 }
 function moveChipToCell(table, chip, destination, toBase = false) {
@@ -689,12 +717,6 @@ function getRoute(table, diceNum, chipNum, cellId) {
             route.push(current.id);
 
             if (!canMove) break;
-
-            if (current.chips.length && i !== dice && !chip.flight)
-                return false;
-            else if (current.chips.length && i === dice)
-                if (!chipCanMove(chip, table, cellId, true))
-                    return false;
         }
 
         if (canMove) {
@@ -774,7 +796,8 @@ function playerLeftTheGame(table, socketId) {
     }
 
     if (isOnePlayerLeft(table)) {
-        gameWon(table, playerNum);
+        let winnerIndex = table.players.findIndex(pl => !pl.left);
+        gameWon(table, table.game.playersOrder[winnerIndex]);
     }
 }
 
