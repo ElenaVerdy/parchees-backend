@@ -82,16 +82,17 @@ io.on("connection", socket => {
     socket.on("init", data => {
         data.name = `${data.first_name} ${data.last_name}`;
         pool
-        .query(`SELECT * FROM users WHERE vk_id = ${data.id} limit 1;`)
+        .query(`SELECT *, NOW() AS now FROM users WHERE vk_id = ${data.id} limit 1;`)
         .then(res => {
             if (res.rows.length) {
-                socket.user = { ...res.rows[0], ...data, name: data.name};
-                socket.emit("init-finished", { ...res.rows[0], name: data.name});
+                let timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now);
+                socket.user = { ...res.rows[0], ...data, name: data.name, timeToLottery};
+                socket.emit("init-finished", { ...res.rows[0], name: data.name, timeToLottery});
             } else {
                 pool.query(`INSERT INTO users (vk_id) values (${data.id}) returning *;`)
                 .then(resp => {
-                    socket.user = { ...resp.rows[0], ...data, name: data.name, new: true };
-                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true });
+                    socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 };
+                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0 });
                 })
                 .catch(err => console.log('1',err))
             }
@@ -218,7 +219,8 @@ io.on("connection", socket => {
             chat = table.chat;
         }
         data.text = censor(data.text);
-        chat.unshift({player: data.player, text: data.text});
+        data.vk_id = socket.user.vk_id;
+        chat.unshift({player: data.player, text: data.text, vk_id: socket.user.vk_id});
         if (data.room === 'main') {
             io.emit("new-msg", data);
         } else {
@@ -246,7 +248,48 @@ io.on("connection", socket => {
         })
         .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
     });
+    socket.on('get-lottery-field', () => {
+        let ret;
+        if (socket.user.lotteryField) {
+            ret = socket.user.lotteryField;
+        } else {
+            let simple = [10, 10, 10, 100, 100, 100, 150, 150, 300, 300, 300, 500, 500, 1000, 2000].sort(() => Math.random() - 0.5);
+            let doubles = [Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0];
+            doubles = doubles.map(num => cheats[num].id);
+            doubles = doubles.sort(() => Math.random() - 0.5);
+            ret = doubles.map((item, i) => simple.splice(0, i).concat(item));
+            socket.user.lotteryField = ret;
+        }
+        socket.emit('lottery-field', { field: ret });
+    });
+    socket.on('lottery-roll', ({ buy }) => {
+        let dice = [Math.random() * 6 + 1 ^ 0, Math.random() * 6 + 1 ^ 0];
+        if (!socket.user.lotteryField) return socket.emit("err", { text: errText});
+        if (dice[0] < dice[1]) dice.push(dice.shift());
+        let prize = socket.user.lotteryField[dice[0] - 1][dice[1] - 1];
+        let prizeColumn = +prize ? 'chips' : prize;
+        let prizeNum = +prize ? prize : 1;
+
+        if (!buy && (new Date() - new Date(socket.user.last_lottery) - 1000 * 20) < 0) {
+            return socket.emit("err", { text: 'Кажется время еще не пришло!'});
+        }
+        pool.query(`UPDATE users SET ${buy ? 'money = money - 1,' : 'last_lottery = NOW(),'} ${prizeColumn} = ${prizeColumn} + ${prizeNum} where vk_id = ${socket.user.vk_id} returning *, NOW() AS now;;`)
+        .then(res => {
+            if (!res.rows.length) return socket.emit("err", { text: errText });
+            let timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now);
+            socket.user = { ...socket.user, ...res.rows[0], timeToLottery };
+            socket.emit("update-user-info", socket.user);
+            socket.emit('lottery-rolled', { dice });
+        })
+        .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
+    })
 });
+
+function getTimeToLottery(last, now) {
+    let msGap = 1000 * 60 * 60 * 24;
+    let ret = (new Date(now) - new Date(last) - msGap);
+    return ret > 0 ? 0 : (-ret / 1000 ^ 0);
+}
 
 function useItem(socket, table, data) {
     switch (data.cheatId) {
@@ -575,7 +618,6 @@ function rollDice(data, auto, cheat) {
 }
 function gameWon(table, playerNum) {
     let defaultCh = defaultChange(table.players.length);
-    console.log(table.game.playersOrder, playerNum)
     table.players.forEach((player, i) => {
         player.won = table.game.playersOrder[i] === playerNum;
         if (player.left || player.won) return;
@@ -587,7 +629,6 @@ function gameWon(table, playerNum) {
         if (a.left && b.left) return 0;
         return a.movesToFinish - b.movesToFinish;
     });
-    console.log(sorted)
     sorted.forEach((pl, i) => {
         pl.deltaBet = pl.won ? (table.bet * (table.players.length - 1)) : -table.bet;
         if (pl.left) {
