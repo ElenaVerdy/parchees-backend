@@ -7,7 +7,9 @@ const io            = require("socket.io")(server);
 const cloneDeep     = require('lodash.clonedeep');
 const commonChat    = [];
 const cheats        = require('./metadata.json').cheats;
-const errText       = "Произошла ошибка!"; 
+const errText       = "Произошла ошибка!";
+let topByRank       = [];
+let topByChips      = [];
 app.use(express.static(__dirname + '/public'));
 
 app.use(function(req, res, next) { 
@@ -20,6 +22,9 @@ app.use(function(req, res, next) {
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/parcheesi"
 });
+
+updateRecords();
+setInterval(updateRecords, 1000 * 60 * 10);
 
 const tables = [];
 tables.remove = function(tableId) {
@@ -87,12 +92,12 @@ io.on("connection", socket => {
             if (res.rows.length) {
                 let timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now);
                 socket.user = { ...res.rows[0], ...data, name: data.name, timeToLottery};
-                socket.emit("init-finished", { ...res.rows[0], name: data.name, timeToLottery});
+                socket.emit("init-finished", { ...res.rows[0], name: data.name, timeToLottery, topByChips, topByRank});
             } else {
                 pool.query(`INSERT INTO users (vk_id) values (${data.id}) returning *;`)
                 .then(resp => {
                     socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 };
-                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0 });
+                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank });
                 })
                 .catch(err => console.log('1',err))
             }
@@ -282,7 +287,7 @@ io.on("connection", socket => {
             socket.emit('lottery-rolled', { dice });
         })
         .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
-    })
+    });
 });
 
 function getTimeToLottery(last, now) {
@@ -1059,4 +1064,11 @@ function checkForWin(table, playerNum) {
 
 function updateRating (table){
     table.rating = table.players.map(pl => pl.rating).reduce((a, b) => a + b, 0) / table.players.length;
+}
+
+function updateRecords() {
+    pool.query(`SELECT vk_id, rating from users order by rating limit 20;`)
+    .then(res => topByRank = res.rows);
+    pool.query(`SELECT vk_id, rating from users order by chips limit 20;`)
+    .then(res => topByChips = res.rows);
 }
