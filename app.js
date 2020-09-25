@@ -1069,6 +1069,6 @@ function updateRating (table){
 function updateRecords() {
     pool.query(`SELECT vk_id, rating from users order by rating desc limit 20;`)
     .then(res => topByRank = res.rows);
-    pool.query(`SELECT vk_id, rating from users order by chips desc limit 20;`)
+    pool.query(`SELECT vk_id, chips from users order by chips desc limit 20;`)
     .then(res => topByChips = res.rows);
 }
