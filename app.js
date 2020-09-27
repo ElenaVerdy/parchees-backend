@@ -1117,11 +1117,10 @@ function userBought(vk_id, itemId) {
     pool.query(`UPDATE users SET ${item.unit} = ${item.unit} + ${item.qty} WHERE vk_id = ${vk_id} returning ${item.unit}, socket_id;`)
     .then(res => {
         if (!res.rows.length) return socket.emit("err", { text: errText });
-        let socket = res.rows[0].socket_id && io.sockets.server.eio.clients[res.rows[0].socket_id];
-        console.log('123', !!socket, socket && socket.user)
+        let socket = io.sockets.connected[res.rows[0].socket_id].user;
         if (socket && socket.user) {
-        console.log('inner123', item.unit, res.rows[0][item.unit])
-        socket.user[item.unit] = res.rows[0][item.unit];
+            console.log('inner123', item.unit, res.rows[0][item.unit])
+            socket.user[item.unit] = res.rows[0][item.unit];
             socket.emit("update-user-info", socket.user);
         }
 })
