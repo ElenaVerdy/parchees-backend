@@ -14,7 +14,7 @@ const bodyParser    = require('body-parser');
 let topByRank       = [];
 let topByChips      = [];
 
-app.use(express.urlencoded({ extended: false }))
+app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
@@ -44,10 +44,12 @@ app.post('/vk_payments_api', (req, res) => {
             case 'get_item_test':
                 let item = moneyItems.find(i => i.item_id === req.body.item);
                 if (!item) res.send(JSON.stringify({ error: { error_code: 20, critical: true } }));
-                else res.send(JSON.stringify({ "response": { ...item, title: encodeURI(item.title), expiration: 3600 } }));
+                else res.send(JSON.stringify({ "response": { ...item, expiration: 3600 } }));
                 break;
             case 'order_status_change':
             case 'order_status_change_test':
+                res.send(JSON.stringify({ "response": { order_id: req.body.order_id, app_order_id: 123123123 } }));
+                break;
             case 'get_subscription':
             case 'get_subscription_test':
             case 'subscription_status_change':
