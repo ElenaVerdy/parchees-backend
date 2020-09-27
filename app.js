@@ -44,11 +44,16 @@ app.post('/vk_payments_api', (req, res) => {
             case 'get_item_test':
                 let item = moneyItems.find(i => i.item_id === req.body.item);
                 if (!item) res.send(JSON.stringify({ error: { error_code: 20, critical: true } }));
-                else res.send(JSON.stringify({ "response": { ...item, expiration: 3600 } }));
+                else res.send(JSON.stringify({ response: { ...item, expiration: 3600 } }));
                 break;
             case 'order_status_change':
             case 'order_status_change_test':
-                res.send(JSON.stringify({ "response": { order_id: req.body.order_id, app_order_id: 123123123 } }));
+                if (req.body.status === 'chargeable') {
+                    userBought(req.body.user_id, req.body.item_id);
+                    res.send(JSON.stringify({ response: { order_id: req.body.order_id, app_order_id: 123123123 } }));
+                } else {
+                    res.send({ error: { error_code: 1, critical: true } });
+                }
                 break;
             case 'get_subscription':
             case 'get_subscription_test':
@@ -63,8 +68,7 @@ const tables = [];
 tables.remove = function(tableId) {
     let table = this.find(table => table.id === tableId);
 
-    if (!table)
-        return false;
+    if (!table) return false;
 
     tables.splice(tables.indexOf(table), 1);
 
@@ -74,13 +78,11 @@ tables.findById = function(id) {return this.find(table => table.id === id)}
 tables.removePlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
 
-    if (!table)
-        return false;
+    if (!table) return false;
 
     let player = table.players.find(player => player.id === socketId);
 
-    if (!player)
-        return false;
+    if (!player) return false;
 
     table.players.splice(table.players.indexOf(player), 1);
 
@@ -89,8 +91,7 @@ tables.removePlayer = function(tableId, socketId) {
 tables.findPlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
 
-    if (!table)
-        return false;
+    if (!table) return false;
     
     let player = table.players.find(player => player.id === socketId);
 
@@ -99,13 +100,11 @@ tables.findPlayer = function(tableId, socketId) {
 tables.indexOfPlayer = function(tableId, socketId) {
     let table = this.findById(tableId);
     
-    if (!table || !table.game)
-        return -1;
+    if (!table || !table.game) return -1;
 
     let player = table.players.find(player => player.id === socketId);
     
-    if (!player)
-        return -1;
+    if (!player) return -1;
 
     return table.players.indexOf(player);
 }
@@ -123,11 +122,17 @@ io.on("connection", socket => {
         .query(`SELECT *, NOW() AS now FROM users WHERE vk_id = ${data.id} limit 1;`)
         .then(res => {
             if (res.rows.length) {
+                if (res.rows[0].socket_id && io.sockets.server.eio.clients[res.rows[0].socket_id]) {
+                    socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
+                    return;
+                }
+                pool.query(`UPDATE users SET socket_id = '${socket.id}' WHERE vk_id  = ${data.id}`);
+
                 let timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now);
                 socket.user = { ...res.rows[0], ...data, name: data.name, timeToLottery};
                 socket.emit("init-finished", { ...res.rows[0], name: data.name, timeToLottery, topByChips, topByRank});
             } else {
-                pool.query(`INSERT INTO users (vk_id) values (${data.id}) returning *;`)
+                pool.query(`INSERT INTO users (vk_id, socket_id) values (${data.id}, ${socket.id}) returning *;`)
                 .then(resp => {
                     socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 };
                     socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank });
@@ -1104,4 +1109,18 @@ function updateRecords() {
     .then(res => topByRank = res.rows);
     pool.query(`SELECT vk_id, chips from users order by chips desc limit 20;`)
     .then(res => topByChips = res.rows);
+}
+
+function userBought(vk_id, itemId) {
+    let item = moneyItems.find(i => i.item_id === itemId);
+    if (!item) return;
+    let column = data.buy ? cheat.currency : cheat.id;
+    pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
+    .then(res => {
+        if (!res.rows.length) return socket.emit("err", { text: errText + '123' });
+        socket.user[column] = res.rows[0][column];
+        useItem(socket, table, data);
+    })
+    .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
+
 }
