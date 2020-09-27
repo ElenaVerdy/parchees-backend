@@ -11,7 +11,7 @@ const cheats        = require('./metadata.json').cheats;
 const errText       = "Произошла ошибка!";
 let topByRank       = [];
 let topByChips      = [];
-app.use(require('body-parser'));
+// app.use(require('body-parser'));
 
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
