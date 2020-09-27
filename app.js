@@ -45,12 +45,16 @@ app.post('/vk_payments_api', (req, res) => {
                 let item = moneyItems.find(i => i.item_id === req.body.item);
                 if (!item) res.send(JSON.stringify({ error: { error_code: 20, critical: true } }));
                 else res.send(JSON.stringify({ ...item, expiration: 3600 }));
+                break;
             case 'order_status_change':
+            case 'order_status_change_test':
             case 'get_subscription':
+            case 'get_subscription_test':
             case 'subscription_status_change':
+            case 'subscription_status_change_test':
+                res.send(JSON.stringify({ hello: 'hello' }));
         }
     }
-    res.send(JSON.stringify({ hello: 'hello' }));
 });
 
 const tables = [];
