@@ -1114,12 +1114,10 @@ function updateRecords() {
 function userBought(vk_id, itemId) {
     let item = moneyItems.find(i => i.item_id === itemId);
     if (!item) return;
-    let column = data.buy ? cheat.currency : cheat.id;
-    pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
+    pool.query(`UPDATE users SET ${item.unit} = ${item.unit} + ${item.qty} WHERE vk_id = ${vk_id} returning ${item.unit}, socket_id;`)
     .then(res => {
-        if (!res.rows.length) return socket.emit("err", { text: errText + '123' });
-        socket.user[column] = res.rows[0][column];
-        useItem(socket, table, data);
+        if (!res.rows.length) return socket.emit("err", { text: errText });
+        console.log(res.rows[0])
     })
     .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
 
