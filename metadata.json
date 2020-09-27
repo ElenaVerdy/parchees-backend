@@ -74,29 +74,29 @@
             "item_id": "money_15",
             "title": "15 монеток",
             "unit": "money",
-            "qty": 5000,
-            "price": 15
+            "qty": 15,
+            "price": 5
         },
         {
             "item_id": "money_50",
             "title": "50 монеток",
             "unit": "money",
-            "qty": 5000,
-            "price": 50
+            "qty": 50,
+            "price": 12
         },
         {
             "item_id": "money_150",
             "title": "150 монеток",
             "unit": "money",
-            "qty": 5000,
-            "price": 150
+            "qty": 150,
+            "price": 25
         },
         {
             "item_id": "money_500",
             "title": "500 монеток",
             "unit": "money",
-            "qty": 5000,
-            "price": 500
+            "qty": 500,
+            "price": 70
         }
     ]
 }

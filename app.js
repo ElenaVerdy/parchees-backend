@@ -1117,8 +1117,12 @@ function userBought(vk_id, itemId) {
     pool.query(`UPDATE users SET ${item.unit} = ${item.unit} + ${item.qty} WHERE vk_id = ${vk_id} returning ${item.unit}, socket_id;`)
     .then(res => {
         if (!res.rows.length) return socket.emit("err", { text: errText });
-        console.log(res.rows[0])
-    })
+        let socket = res.rows[0].socket_id && io.sockets.server.eio.clients[res.rows[0].socket_id];
+        if (socket && socket.user) {
+            socket.user[item.unit] = res.rows[0][item.unit];
+            socket.emit("update-user-info", socket.user);
+        }
+})
     .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
 
 }
