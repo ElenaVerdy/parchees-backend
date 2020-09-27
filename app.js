@@ -50,6 +50,8 @@ app.post('/vk_payments_api', (req, res) => {
     //         case 'subscription_status_change':
     //     }
     // }
+    console.log('hmmm')
+    res.sendStatus(200);
 });
 
 const tables = [];
