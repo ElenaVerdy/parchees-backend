@@ -5,12 +5,13 @@ const server        = app.listen(process.env.PORT || 8000, () => console.log(`Li
 const { Pool }      = require('pg');
 const io            = require("socket.io")(server);
 const cloneDeep     = require('lodash.clonedeep');
+const md5           = require('md5');
 const commonChat    = [];
 const cheats        = require('./metadata.json').cheats;
 const errText       = "Произошла ошибка!";
 let topByRank       = [];
 let topByChips      = [];
-app.use(express.static(__dirname + '/public'));
+app.use(require('body-parser'));
 
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
@@ -25,6 +26,31 @@ const pool = new Pool({
 
 updateRecords();
 setInterval(updateRecords, 1000 * 60 * 10);
+
+app.post('/vk_payments_api', (req, res) => {
+    console.log(req.body)
+    let sig = req.body.sig;
+    delete req.body.sig;
+    let keys = Object.keys(req.body).sort();
+    let str = keys.reduce((sum, cur) => sum += `${cur}=${req.body[cur]}`, '') + 'BuyEiIPxGrCpj2ZvoQhi';
+    console.log(sig === md5(str));
+
+    // if ($sig != md5($str.$secret_key)) {
+    // $response['error'] = array(
+    //     'error_code': 10,
+    //     'error_msg': 'Несовпадение вычисленной и переданной подписи запроса.',
+    //     'critical': true
+    // );
+    // } else {
+    //     switch (req.body.notification_type) {
+    //         case 'get_item':
+
+    //         case 'order_status_change':
+    //         case 'get_subscription':
+    //         case 'subscription_status_change':
+    //     }
+    // }
+});
 
 const tables = [];
 tables.remove = function(tableId) {
