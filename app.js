@@ -41,6 +41,7 @@ app.post('/vk_payments_api', (req, res) => {
     } else {
         switch (req.body.notification_type) {
             case 'get_item':
+            case 'get_item_test':
                 let item = moneyItems.find(i => i.item_id === req.body.item);
                 if (!item) res.send(JSON.stringify({ error: { error_code: 20, critical: true } }));
                 else res.send(JSON.stringify({ ...item, expiration: 3600 }));
