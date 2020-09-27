@@ -12,7 +12,7 @@ const errText       = "Произошла ошибка!";
 let topByRank       = [];
 let topByChips      = [];
 
-app.use(require('body-parser').json());
+app.use(express.json());
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
