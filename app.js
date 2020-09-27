@@ -28,29 +28,29 @@ updateRecords();
 setInterval(updateRecords, 1000 * 60 * 10);
 
 app.post('/vk_payments_api', (req, res) => {
-    console.log(req.body)
-    let sig = req.body.sig;
-    delete req.body.sig;
-    let keys = Object.keys(req.body).sort();
-    let str = keys.reduce((sum, cur) => sum += `${cur}=${req.body[cur]}`, '') + 'BuyEiIPxGrCpj2ZvoQhi';
-    console.log(sig === md5(str));
+    // console.log(req.body)
+    // let sig = req.body.sig;
+    // delete req.body.sig;
+    // let keys = Object.keys(req.body).sort();
+    // let str = keys.reduce((sum, cur) => sum += `${cur}=${req.body[cur]}`, '') + 'BuyEiIPxGrCpj2ZvoQhi';
+    // console.log(sig === md5(str));
 
-    // if ($sig != md5($str.$secret_key)) {
-    // $response['error'] = array(
-    //     'error_code': 10,
-    //     'error_msg': 'Несовпадение вычисленной и переданной подписи запроса.',
-    //     'critical': true
-    // );
-    // } else {
-    //     switch (req.body.notification_type) {
-    //         case 'get_item':
+    // // if ($sig != md5($str.$secret_key)) {
+    // // $response['error'] = array(
+    // //     'error_code': 10,
+    // //     'error_msg': 'Несовпадение вычисленной и переданной подписи запроса.',
+    // //     'critical': true
+    // // );
+    // // } else {
+    // //     switch (req.body.notification_type) {
+    // //         case 'get_item':
 
-    //         case 'order_status_change':
-    //         case 'get_subscription':
-    //         case 'subscription_status_change':
-    //     }
-    // }
-    console.log('hmmm')
+    // //         case 'order_status_change':
+    // //         case 'get_subscription':
+    // //         case 'subscription_status_change':
+    // //     }
+    // // }
+    // console.log('hmmm')
     res.send(JSON.stringify({ hello: 'hello' }));
 });
 
