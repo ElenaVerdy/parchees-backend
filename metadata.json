@@ -40,5 +40,47 @@
             "currency": "money",
             "price": 3
         }
+    ],
+    "money": [
+        {
+            "item_id": "chips_5000",
+            "title": "5000 фишек",
+            "price": 1
+        },
+        {
+            "item_id": "chips_25000",
+            "title": "25000 фишек",
+            "price": 3
+        },
+        {
+            "item_id": "chips_100000",
+            "title": "100000 фишек",
+            "price": 10
+        },
+        {
+            "item_id": "chips_500000",
+            "title": "500000 фишек",
+            "price": 40
+        },
+        {
+            "item_id": "money_15",
+            "title": "15 монеток",
+            "price": 5
+        },
+        {
+            "item_id": "money_50",
+            "title": "50 монеток",
+            "price": 12
+        },
+        {
+            "item_id": "money_150",
+            "title": "150 монеток",
+            "price": 25
+        },
+        {
+            "item_id": "money_500",
+            "title": "500 монеток",
+            "price": 70
+        }
     ]
 }
