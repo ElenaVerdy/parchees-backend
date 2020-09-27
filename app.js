@@ -1117,7 +1117,7 @@ function userBought(vk_id, itemId) {
     pool.query(`UPDATE users SET ${item.unit} = ${item.unit} + ${item.qty} WHERE vk_id = ${vk_id} returning ${item.unit}, socket_id;`)
     .then(res => {
         if (!res.rows.length) return socket.emit("err", { text: errText });
-        let socket = io.sockets.connected[res.rows[0].socket_id].user;
+        let socket = io.sockets.connected[res.rows[0].socket_id];
         if (socket && socket.user) {
             console.log('inner123', item.unit, res.rows[0][item.unit])
             socket.user[item.unit] = res.rows[0][item.unit];
