@@ -156,6 +156,7 @@ io.on("connection", socket => {
 
     socket.on("new-table", data => {
         if (!data.bet) return;
+        if (data.bet > socket.user.chips) return socket.emit("err", { text: 'Недостаточно фишек!' });
         let tableId = "t_" + (Math.random() * 100000000 ^ 0);
         let player = {
             id: socket.id,
@@ -182,6 +183,7 @@ io.on("connection", socket => {
             socket.emit("cant-join", {text: "Не получилось подключиться!"});
             return;
         }
+        if (table.bet > socket.user.chips) return socket.emit("err", { text: 'Недостаточно фишек!' });
         let player = {
             id: socket.id,
             ready: false,
