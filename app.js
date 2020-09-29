@@ -140,7 +140,7 @@ io.on("connection", socket => {
                 socket.user = { ...res.rows[0], ...data, name: data.name, timeToLottery};
                 socket.emit("init-finished", { ...res.rows[0], name: data.name, timeToLottery, topByChips, topByRank});
             } else {
-                pool.query(`INSERT INTO users (vk_id, socket_id) values (${data.id}, ${socket.id}) returning *;`)
+                pool.query(`INSERT INTO users (vk_id, socket_id) values (${data.id}, '${socket.id}') returning *;`)
                 .then(resp => {
                     socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 };
                     socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank, justInstalled: true });
@@ -387,7 +387,7 @@ function cheatCat(socket, table, { player, num, cheatId }) {
 }
 function cheatLuck(table, { cheatId }) {
     let player = table.game.playersOrder[table.game.turn];
-    table.game.cheats.push({ cheatId, player, count: getCheatDuration(cheatId) });
+    table.game.cheats.push({ cheatId, player, count: 1 });
     table.players[table.game.turn][cheatId] = true;
 }
 function getCheatDuration(cheatId) {
