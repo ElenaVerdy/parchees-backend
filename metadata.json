@@ -3,27 +3,27 @@
         {
             "id": "skip",
             "currency": "money",
-            "price": 5
+            "price": 1
         },
         {
             "id": "reroll",
             "currency": "money",
-            "price": 3
+            "price": 1
         },
         {
             "id": "shield",
             "currency": "money",
-            "price": 3
+            "price": 1
         },
         {
             "id": "cat",
             "currency": "money",
-            "price": 3
+            "price": 2
         },
         {
             "id": "no_shortcuts",
             "currency": "money",
-            "price": 3
+            "price": 2
         },
         {
             "id": "free_shortcuts",

@@ -10,7 +10,6 @@ const commonChat    = [];
 const cheats        = require('./metadata.json').cheats;
 const moneyItems    = require('./metadata.json').money;
 const errText       = "Произошла ошибка!";
-const bodyParser    = require('body-parser');
 let topByRank       = [];
 let topByChips      = [];
 
@@ -18,7 +17,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
-    res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.67:3000/');
+    res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.64:3000/');
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
 });
@@ -31,7 +30,6 @@ updateRecords();
 setInterval(updateRecords, 1000 * 60 * 10);
 
 app.post('/vk_payments_api', (req, res) => {
-    console.log(req.body)
     let sig = req.body.sig;
     delete req.body.sig;
     let keys = Object.keys(req.body).sort();
@@ -109,6 +107,16 @@ tables.indexOfPlayer = function(tableId, socketId) {
     return table.players.indexOf(player);
 }
 
+let availableTables;
+updAvailableTables();
+function updAvailableTables() {
+    availableTables = tables.filter(i => {
+        return i.players.length !== 4 && (!i.game || i.game.finished);
+    })
+    .map(table => { return { tableId: table.id, players: table.players, rating: table.rating, bet: table.bet }; });
+    setTimeout(updAvailableTables, 500);
+}
+
 const timers = {};
 
 io.on("connection", socket => {
@@ -135,7 +143,7 @@ io.on("connection", socket => {
                 pool.query(`INSERT INTO users (vk_id, socket_id) values (${data.id}, ${socket.id}) returning *;`)
                 .then(resp => {
                     socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 };
-                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank });
+                    socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank, justInstalled: true });
                 })
                 .catch(err => console.log('1',err))
             }
@@ -143,10 +151,6 @@ io.on("connection", socket => {
         .catch(err => console.error('Error executing query', err.stack));
     });
     socket.on("get-tables-request", () => {
-        let availableTables = tables.filter(i => {
-            return i.players.length !== 4 && (!i.game || i.game.finished);
-        })
-        .map(table => { return { tableId: table.id, players: table.players, rating: table.rating, bet: table.bet }; });
         socket.emit("update-tables", availableTables);
     });
 
