@@ -466,7 +466,7 @@ function autoMove(table) {
         if (table.players[playerIndex].missedTurn) {
             return playerDisconnected(table, socket.id);
         } else {
-            // table.players[playerIndex].missedTurn = true;
+            table.players[playerIndex].missedTurn = true;
         }
         rollDice.call(socket, {tableId: table.id, dice: []}, true);
     } else {
@@ -832,10 +832,10 @@ function updateCountDown(table) {
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
             timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
             // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
-            moveChipOnRoute(table, table.game.chips[3][2], ['game_cell20'], 'test');
-            moveChipOnRoute(table, table.game.chips[3][3], ['game_cell25'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell6'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
+            // moveChipOnRoute(table, table.game.chips[3][2], ['game_cell20'], 'test');
+            // moveChipOnRoute(table, table.game.chips[3][3], ['game_cell25'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][3], ['game_cell6'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
         }, 5000)
     }
 }
