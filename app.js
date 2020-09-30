@@ -466,6 +466,7 @@ function autoMove(table) {
         let playerIndex = tables.indexOfPlayer(table.id, socket.id);
         if (!~playerIndex) return console.log('autoMove: player is not in game');
         if (table.players[playerIndex].missedTurn) {
+            io.to(socket.id).emit('removed');
             return playerDisconnected(table, socket.id);
         } else {
             table.players[playerIndex].missedTurn = true;
@@ -860,7 +861,6 @@ function playerDisconnected(table, socketId) {
     } else {
         if (table.players.length === 1) {
             tables.remove(table.id);
-            io.to(socketId).emit('removed');
         } else {
             tables.removePlayer(table.id, socketId);
             updateRating(table);
