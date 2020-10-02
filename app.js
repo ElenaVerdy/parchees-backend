@@ -10,6 +10,7 @@ const commonChat    = [];
 const cheats        = require('./metadata.json').cheats;
 const moneyItems    = require('./metadata.json').money;
 const errText       = "Произошла ошибка!";
+const cheatOn       = "Данный чит уже активирован. Дождитесь когда действие закончится, и тогда вы сможете наложить его снова.";
 let topByRank       = [];
 let topByChips      = [];
 
@@ -131,8 +132,8 @@ io.on("connection", socket => {
         .then(res => {
             if (res.rows.length) {
                 if (res.rows[0].socket_id && io.sockets.server.eio.clients[res.rows[0].socket_id]) {
-                    socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
-                    return;
+                    // socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
+                    // return;
                 }
                 pool.query(`UPDATE users SET socket_id = '${socket.id}' WHERE vk_id  = ${data.id}`);
 
@@ -223,10 +224,11 @@ io.on("connection", socket => {
     socket.on("finish-turn", data => nextTurn.call(socket, data.tableId));
     
     socket.on("leave-table", data => {
-
         if (!data.tableId) return;
+        let player = tables.findPlayer(data.tableId, socket.id);
+        if (!player || player.left) return;
+
         let table = tables.findById(data.tableId);
-        if (!table) return console.log("game not found");
         socket.leave(data.tableId);
         playerDisconnected(table, socket.id);
     });
@@ -287,7 +289,10 @@ io.on("connection", socket => {
         let index = tables.indexOfPlayer(data.tableId, socket.id);
         if (index === -1) return console.log("You are not in the game");
         if (index !== table.game.turn) return console.log("not your turn");
-        
+
+        const chip = table.game.chips[data.player][data.num];
+        if (getCheatDuration(data.cheatId) && chip[data.cheatId]) return socket.emit("err", { text: cheatOn });
+
         let column = data.buy ? cheat.currency : cheat.id;
         pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
         .then(res => {
@@ -393,11 +398,10 @@ function cheatLuck(table, { cheatId }) {
     table.players[table.game.turn][cheatId] = true;
 }
 function getCheatDuration(cheatId) {
-    if (cheatId === 'shield') return 20;
-    if (cheatId === 'free_shortcuts') return 10;
-    if (cheatId === 'flight') return 10;
-    if (cheatId === 'no_shortcuts') return 10;
-    if (cheatId === 'luck') return 1;
+    if (cheatId === 'shield') return 3;
+    if (cheatId === 'free_shortcuts') return 10000;
+    if (cheatId === 'flight') return 3;
+    if (cheatId === 'no_shortcuts') return 10000;
 }
 function handleBuying(data) {
     if (!data || !data.id) return;
@@ -1125,11 +1129,10 @@ function userBought(vk_id, itemId) {
         if (!res.rows.length) return socket.emit("err", { text: errText });
         let socket = io.sockets.connected[res.rows[0].socket_id];
         if (socket && socket.user) {
-            console.log('inner123', item.unit, res.rows[0][item.unit])
             socket.user[item.unit] = res.rows[0][item.unit];
             socket.emit("update-user-info", socket.user);
         }
-})
+    })
     .catch((e) => {console.log(e); socket.emit("err", { text: errText})});
 
 }
