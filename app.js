@@ -133,8 +133,8 @@ io.on("connection", socket => {
         .then(res => {
             if (res.rows.length) {
                 if (res.rows[0].socket_id && io.sockets.server.eio.clients[res.rows[0].socket_id]) {
-                    // socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
-                    // return;
+                    socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
+                    return;
                 }
                 pool.query(`UPDATE users SET socket_id = '${socket.id}' WHERE vk_id  = ${data.vk_id}`).catch(badErrorHandler);
 
@@ -308,7 +308,7 @@ io.on("connection", socket => {
         if (socket.user.lotteryField) {
             ret = socket.user.lotteryField;
         } else {
-            let simple = [10, 10, 10, 100, 100, 100, 150, 150, 300, 300, 300, 500, 500, 1000, 2000].sort(() => Math.random() - 0.5);
+            let simple = [100, 100, 100, 100, 200, 200, 200, 300, 300, 400, 500, 1000, 1500, 2000, 2500].sort(() => Math.random() - 0.5);
             let doubles = [Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0];
             doubles = doubles.map(num => cheats[num].id);
             doubles = doubles.sort(() => Math.random() - 0.5);
@@ -841,10 +841,10 @@ function updateCountDown(table) {
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
             timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
-            moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][2], ['game_cell-finish_player1_3'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][3], ['game_cell-finish_player1_2'], 'test');
-            moveChipOnRoute(table, table.game.chips[1][4], ['game_cell47'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][2], ['game_cell-finish_player1_3'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][3], ['game_cell-finish_player1_2'], 'test');
+            // moveChipOnRoute(table, table.game.chips[1][4], ['game_cell47'], 'test');
             // moveChipOnRoute(table, table.game.chips[1][4], ['game_cell45'], 'test');
         }, 5000)
     }
