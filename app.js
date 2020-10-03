@@ -291,8 +291,10 @@ io.on("connection", socket => {
         if (index === -1) return badErrorHandler("You are not in the game");
         if (index !== table.game.turn) return badErrorHandler("not your turn");
 
-        const chip = table.game.chips[data.player][data.num];
-        if (getCheatDuration(data.cheatId) && chip[data.cheatId]) return socket.emit("err", { text: cheatOn });
+        if (data.player && data.num && table.game.chips[data.player]) {
+            const chip = table.game.chips[data.player][data.num];
+            if (getCheatDuration(data.cheatId) && chip[data.cheatId]) return socket.emit("err", { text: cheatOn });
+        }
 
         let column = data.buy ? cheat.currency : cheat.id;
         pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
