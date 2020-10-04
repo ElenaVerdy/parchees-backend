@@ -132,7 +132,7 @@ io.on("connection", socket => {
         .query(`SELECT *, NOW() AS now FROM users WHERE vk_id = ${data.vk_id} limit 1;`)
         .then(res => {
             if (res.rows.length) {
-                if (res.rows[0].socket_id && io.sockets.server.eio.clients[res.rows[0].socket_id]) {
+                if (res.rows[0].socket_id && res.rows[0].socket_id !== socket.id && io.sockets.server.eio.clients[res.rows[0].socket_id]) {
                     socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
                     return;
                 }
@@ -256,7 +256,7 @@ io.on("connection", socket => {
         if (data.turn !== table.game.turn) return badErrorHandler("not your turn");
 
         clearTimeout(timers[table.id]);
-        table.game.finished || (timers[table.id] = setTimeout(autoMove.bind(null, table), 10000));
+        table.game.finished || (timers[table.id] = setTimeout(autoMove.bind(null, table), 15000));
     });
     socket.on("send-msg", data => {
         let chat;
@@ -621,7 +621,7 @@ function nextTurn(tableId, socketId = null) {
     table.game.turn = findNextTurn(table);
     table.game.diceRolled = false;
     clearTimeout(timers[tableId]);
-    timers[tableId] = setTimeout(autoMove.bind(null, table), 11500); // should be 10000
+    timers[tableId] = setTimeout(autoMove.bind(null, table), 15000);
     updateCheats(table);
     io.in(table.id).emit("next-turn", {turn: table.game.turn, actionCount: ++table.game.actionCount});
 }
@@ -684,7 +684,7 @@ function rollDice(data, auto, cheat) {
     table.game.diceRolled = true;
     io.in(data.tableId).emit("dice-rolled", {dice, actionCount: ++table.game.actionCount, cheat});
     clearTimeout(timers[table.id]);
-    timers[table.id] = setTimeout(autoMove.bind(null, table), 30000);
+    timers[table.id] = setTimeout(autoMove.bind(null, table), 45000);
     auto || (table.players[table.game.turn].missedTurn = false);
 }
 function gameWon(table, playerNum) {
@@ -839,7 +839,7 @@ function getRoute(table, diceNum, chipNum, cellId) {
 
             result = route;
         }
-        if (!result.length) throw new Error(result);
+        if (!result.length) return false;
         if (chip.flight && result.length) result = [result[result.length - 1]];
     }
     return result;
@@ -857,7 +857,7 @@ function updateCountDown(table) {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
-            timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
+            timers[table.id] = setTimeout(() => autoMove.call(null, table), 16500); // should be 15000
             io.in(table.id).emit("new-msg", { room: table.id, text: `Первый ход достался ${nums2colors[table.game.playersOrder[table.game.turn]]} игроку`, player: {id: 'auto', name: 'Компьютер'} });
             // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
             // moveChipOnRoute(table, table.game.chips[1][2], ['game_cell-finish_player1_3'], 'test');
@@ -964,29 +964,17 @@ function createScheme() {
         ret[id] = k;        
 
         if (i % 12 === 0) {
-            let n;
+            let finishMap = {
+                48: 1,
+                12: 4,
+                24: 3,
+                36: 2
+            };
+            let n = finishMap[i];
 
-            switch (i) {
-                case 48:
-                    n = 1;
-                    break;
-                case 12:
-                    n = 4;
-                    break;
-                case 24:
-                    n = 3;
-                    break;
-                case 36:
-                    n = 2;
-                    break;
-                default:
-                    break;
-            
-            }
             k.links["toFinish" + n] = `game_cell-finish_player${n}_1`; 
 
             [1, 2, 3, 4].forEach(k => {
-                
                 let finish = {
                     isFinish: true,
                     id: `game_cell-finish_player${n}_${k}`,
@@ -995,29 +983,17 @@ function createScheme() {
                 finish.links = { next: (k === 4 ? null : `game_cell-finish_player${n}_${k + 1}`) };
     
                 ret[finish.id] = finish;
-
             })
         }
         if (i % 12 === 1) {
-            let n;
+            let startMap = {
+                1: 1,
+                13: 4,
+                25: 3,
+                37: 2
+            };
+            let n = startMap[i];
 
-            switch (i) {
-                case 1:
-                    n = 1;
-                    break;
-                case 13:
-                    n = 4;
-                    break;
-                case 25:
-                    n = 3;
-                    break;
-                case 37:
-                    n = 2;
-                    break;
-                default:
-                    break;
-            
-            }
             let start = {
                 isStart: true,
                 id:("game_start-cell_player" + n),
@@ -1060,9 +1036,9 @@ function createScheme() {
 function newGame(players) {
     let ret = {
         id: ("id_" + (Math.random() * 100000000 ^ 0)),
-        playersOrder: getPlayers(players.length),
+        playersOrder: getPlayersOrder(players.length),
         dice: [],
-        chips: defaultChipsPositions(getPlayers(players.length)),
+        chips: defaultChipsPositions(getPlayersOrder(players.length)),
         cheats: [],
         turn: (Math.random() * players.length ^ 0),
         scheme: createScheme(),
@@ -1098,26 +1074,9 @@ function defaultChipsPositions(playersOrder) {
 
     return ret;
 }
-
-function getPlayers(num) {
-    let playersOrder = [];
-
-    switch (num) {
-        case 1:
-            playersOrder = [1];
-            break;
-        case 2:
-            playersOrder = [1, 3];
-            break;
-        case 3:
-            playersOrder = [1, 2, 3];
-            break;
-        case 4:
-            playersOrder = [1, 2, 3, 4];
-            break;
-    }
-
-    return playersOrder;
+const orderOptions = [[], [1], [1, 3], [1, 2, 3], [1, 2, 3, 4]];
+function getPlayersOrder(num) {
+    return orderOptions[num];
 }
 function getPlayerFromCell(table, cellId) {
     if (!table.game)
