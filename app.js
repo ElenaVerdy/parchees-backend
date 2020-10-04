@@ -291,10 +291,7 @@ io.on("connection", socket => {
         if (index === -1) return badErrorHandler("You are not in the game");
         if (index !== table.game.turn) return badErrorHandler("not your turn");
 
-        if (data.player && data.num && table.game.chips[data.player]) {
-            const chip = table.game.chips[data.player][data.num];
-            if (getCheatDuration(data.cheatId) && chip[data.cheatId]) return socket.emit("err", { text: cheatOn });
-        }
+        if (!validateCheat(table, socket, data)) return;
 
         let column = data.buy ? cheat.currency : cheat.id;
         pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
@@ -381,16 +378,21 @@ function cheatChip(table, { player, num, cheatId }) {
     if (cheatId === 'free_shortcuts')
         cheatExpired(table, 'no_shortcuts', player, num);
 }
-function cheatCat(socket, table, { player, num, cheatId }) {
-    const chip = table.game.chips[player][num];
-    let start = table.game.scheme[chip.position];
+function getNextCell(table, chip) {
+    if (!table.game) return;
+    let scheme = table.game.scheme;
+    let start = scheme[chip.position];
     if (start.isSH) {
         if (scheme[start.links.outOfSH].chips.length && !chip.flight)
             return;
         else
             start = scheme[start.links.outOfSH];
     }
-    let destination = start.links['toFinish' + player] || start.links.next;
+    return start.links['toFinish' + chip.player] || start.links.for6 || start.links.next;
+}
+function cheatCat(socket, table, { player, num, cheatId }) {
+    const chip = table.game.chips[player][num];
+    let destination = getNextCell(table, chip);
     if (destination) {
         moveChipOnRoute(table, chip, [destination], false, true);
     }
@@ -399,6 +401,17 @@ function cheatLuck(table, { cheatId }) {
     let player = table.game.playersOrder[table.game.turn];
     table.game.cheats.push({ cheatId, player, count: 1 });
     table.players[table.game.turn][cheatId] = true;
+}
+function validateCheat(table, socket, { player, num, cheatId }) {
+    if (player && num && table.game.chips[player]) {
+        const chip = table.game.chips[player][num];
+        if (getCheatDuration(cheatId) && chip[cheatId]) return socket.emit("err", { text: cheatOn });
+        if (cheatId === 'cat') {
+            let destination = getNextCell(table, chip);
+            if (!destination) return socket.emit("err", { text: 'Котик туда не пойдет.'});
+        }
+    }
+    return true;
 }
 function getCheatDuration(cheatId) {
     if (cheatId === 'shield') return 3;
@@ -467,6 +480,7 @@ function playerMadeMove(data) {
     }
 }
 function autoMove(table) {
+    if (!table.players[table.game.turn]) return;
     let socket = io.sockets.connected[table.players[table.game.turn].id];
     if (!socket) return;
     if (!table.game.diceRolled) {
@@ -607,7 +621,7 @@ function nextTurn(tableId, socketId = null) {
     table.game.turn = findNextTurn(table);
     table.game.diceRolled = false;
     clearTimeout(timers[tableId]);
-    timers[tableId] = setTimeout(autoMove.bind(null, table), 10000);
+    timers[tableId] = setTimeout(autoMove.bind(null, table), 11500); // should be 10000
     updateCheats(table);
     io.in(table.id).emit("next-turn", {turn: table.game.turn, actionCount: ++table.game.actionCount});
 }
@@ -832,6 +846,7 @@ function getRoute(table, diceNum, chipNum, cellId) {
 }
 
 function updateCountDown(table) {
+    const nums2colors = ['', 'красному', 'зелёному', 'синему', 'жёлтому']
     let turnOff = table.players.length === 1 || !table.players.every(pl => pl.ready);
     clearTimeout(timers[table.id]);
     io.in(table.id).emit("all-players-ready", {cancel: true});
@@ -843,6 +858,7 @@ function updateCountDown(table) {
             table.players.forEach(pl => pl.ready = false);
             io.in(table.id).emit("game-start", {turn: table.game.turn, players: table.players, actionCount: 0});
             timers[table.id] = setTimeout(() => autoMove.call(null, table), 10000);
+            io.in(table.id).emit("new-msg", { room: table.id, text: `Первый ход достался ${nums2colors[table.game.playersOrder[table.game.turn]]} игроку`, player: {id: 'auto', name: 'Компьютер'} });
             // moveChipOnRoute(table, table.game.chips[1][1], ['game_cell-finish_player1_4'], 'test');
             // moveChipOnRoute(table, table.game.chips[1][2], ['game_cell-finish_player1_3'], 'test');
             // moveChipOnRoute(table, table.game.chips[1][3], ['game_cell-finish_player1_2'], 'test');
@@ -901,7 +917,7 @@ function playerLeftTheGame(table, socketId) {
                 socket.user.rating = res.rows[0].rating;
                 socket.emit("update-user-info", socket.user);
             }
-        });
+        }).catch(badErrorHandler);
 
     if (isOnePlayerLeft(table)) {
         let winnerIndex = table.players.findIndex(pl => !pl.left);
