@@ -251,12 +251,13 @@ io.on("connection", socket => {
     socket.on("reset-timer", data => {
         let table = tables.findById(data.tableId);
         if (!table) return badErrorHandler("game not found");
+        if (!table.game || !table.game.finished) return badErrorHandler('game is not on');
         let player = tables.findPlayer(data.tableId, socket.id);
         if (!player) return badErrorHandler("You are not in the game");
         if (data.turn !== table.game.turn) return badErrorHandler("not your turn");
 
         clearTimeout(timers[table.id]);
-        table.game.finished || (timers[table.id] = setTimeout(autoMove.bind(null, table), 15000));
+        timers[table.id] = setTimeout(autoMove.bind(null, table), 15000);
     });
     socket.on("send-msg", data => {
         let chat;
@@ -320,14 +321,15 @@ io.on("connection", socket => {
         let dice = [Math.random() * 6 + 1 ^ 0, Math.random() * 6 + 1 ^ 0];
         if (!socket.user.lotteryField) return socket.emit("err", { text: errText});
         if (dice[0] < dice[1]) dice.push(dice.shift());
-        let prize = socket.user.lotteryField[dice[0] - 1][dice[1] - 1];
-        let prizeColumn = +prize ? 'chips' : prize;
-        let prizeNum = +prize ? prize : 1;
 
         if (!buy && (new Date() - new Date(socket.user.last_lottery) - 1000 * 20) < 0) {
             return socket.emit("err", { text: 'Кажется время еще не пришло!'});
         }
-        pool.query(`UPDATE users SET ${buy ? 'money = money - 1,' : 'last_lottery = NOW(),'} ${prizeColumn} = ${prizeColumn} + ${prizeNum} where vk_id = ${socket.user.vk_id} returning *, NOW() AS now;;`)
+        let prize = socket.user.lotteryField[dice[0] - 1][dice[1] - 1];
+        let prizes = { [+prize ? 'chips' : prize]: +prize ? prize + 500 : 1 };
+        +prize || (prizes.chips = 500);
+
+        pool.query(`UPDATE users SET ${buy ? 'money = money - 1,' : 'last_lottery = NOW(),'} ${Object.keys(prizes).map(k => `${k} = ${k} + ${prizes[k]}`)} where vk_id = ${socket.user.vk_id} returning *, NOW() AS now;;`)
         .then(res => {
             if (!res.rows.length) return socket.emit("err", { text: errText });
             let timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now);
@@ -527,6 +529,7 @@ function makeRandomMove(table) {
         return false;
     }
     let move = possibleMoves[(Math.random() * possibleMoves.length) ^ 0];
+    console.log(chip.player, chip.num, chip.position, move, possibleMoves);
 
     playerMadeMove.call(this, {tableId: table.id, yourTurn: table.game.turn, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
     return true;
@@ -751,15 +754,9 @@ function gameWon(table, playerNum) {
         })
         .catch(err => console.error('Error executing query', err.stack));
 }
+const defaultChangeOptions = [[], [], [15, -15], [17, 0, -17], [20, 10, -10, -20]]
 function defaultChange(num) {
-    switch (num) {
-        case 2:
-            return [15, -15];
-        case 3:
-            return [17, 0, -17];
-        case 4:
-            return [20, 10, -10, -20];
-    }
+    return defaultChangeOptions[num]
 }
 function moveChipToCell(table, chip, destination, toBase = false) {
     let scheme = table.game.scheme;
@@ -1079,15 +1076,11 @@ function getPlayersOrder(num) {
     return orderOptions[num];
 }
 function getPlayerFromCell(table, cellId) {
-    if (!table.game)
-        return null;
+    if (!table.game) return null;
 
     let chipId = table.game.scheme[cellId].chips[0];
 
-    if (chipId && chipId[16])
-        return +chipId[16];
-    else 
-        return null;
+    return chipId && chipId[16] ? +chipId[16] : null;
 }
 
 function checkForWin(table, playerNum) {
