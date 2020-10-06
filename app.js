@@ -410,7 +410,8 @@ function validateCheat(table, socket, { player, num, cheatId }) {
         if (getCheatDuration(cheatId) && chip[cheatId]) return socket.emit("err", { text: cheatOn });
         if (cheatId === 'cat') {
             let destination = getNextCell(table, chip);
-            if (!destination) return socket.emit("err", { text: 'Котик туда не пойдет.'});
+            if (!destination || (table.game.scheme[destination].chips.length && !table.game.scheme[destination].isStart))
+                return socket.emit("err", { text: 'Котик туда не пойдет.'});
         }
     }
     return true;
