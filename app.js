@@ -19,7 +19,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
-    res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.64:3000/');
+    res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.69:3000/');
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
 });
@@ -405,16 +405,22 @@ function cheatLuck(table, { cheatId }) {
     table.players[table.game.turn][cheatId] = true;
 }
 function validateCheat(table, socket, { player, num, cheatId }) {
+    let ret;
     if (player && num && table.game.chips[player]) {
         const chip = table.game.chips[player][num];
-        if (getCheatDuration(cheatId) && chip[cheatId]) return socket.emit("err", { text: cheatOn });
-        if (cheatId === 'cat') {
+        if (getCheatDuration(cheatId) && chip[cheatId]) {
+            ret = socket.emit("err", { text: cheatOn });
+        } else if (cheatId === 'cat') {
             let destination = getNextCell(table, chip);
-            if (!destination || (table.game.scheme[destination].chips.length && !table.game.scheme[destination].isStart))
-                return socket.emit("err", { text: 'Котик туда не пойдет.'});
+            if (!destination || (table.game.scheme[destination].chips.length && !table.game.scheme[destination].isStart)) {
+                ret = socket.emit("err", { text: 'Котик туда не пойдет.'});
+            }
         }
+    } else if (cheatId === 'reroll') {
+        if (!table.game.dice.length) ret = socket.emit("err", { text: 'Сначала бросьте кубик, а уже потом решите нравится вам оно или нет.'})
+        else if (!table.game.dice[0] && !table.game.dice[1]) ret = socket.emit("err", { text: 'Вы уже потратили оба кубика. Нечего перебрасывать.'});
     }
-    return true;
+    return !ret;
 }
 function getCheatDuration(cheatId) {
     if (cheatId === 'shield') return 3;
@@ -678,7 +684,7 @@ function rollDice(data, auto, cheat) {
     if (!dice[0]) dice[0] = null;
     if (!dice[1]) dice[1] = null;
     if (dice[0] && dice[1] && table.players[table.game.turn].luck) dice[1] = dice[0];
-    if (dice[0] === dice[1]) {
+    if (!cheat && dice[0] === dice[1]) {
         table.game.doublesStreak = table.game.doublesStreak === 2 ? 0 : table.game.doublesStreak + 1;
     } else {
         table.game.doublesStreak = 0;
@@ -686,7 +692,7 @@ function rollDice(data, auto, cheat) {
 
     table.game.dice = dice;
     table.game.diceRolled = true;
-    io.in(data.tableId).emit("dice-rolled", {dice, actionCount: ++table.game.actionCount, cheat});
+    io.in(data.tableId).emit("dice-rolled", {dice, actionCount: ++table.game.actionCount, cheat, doublesStreak: table.game.doublesStreak});
     clearTimeout(timers[table.id]);
     timers[table.id] = setTimeout(autoMove.bind(null, table), 45000);
     auto || (table.players[table.game.turn].missedTurn = false);
@@ -962,14 +968,7 @@ function createScheme() {
         ret[id] = k;        
 
         if (i % 12 === 0) {
-            let finishMap = {
-                48: 1,
-                12: 4,
-                24: 3,
-                36: 2
-            };
-            let n = finishMap[i];
-
+            let n = (60 - i) / 12;
             k.links["toFinish" + n] = `game_cell-finish_player${n}_1`; 
 
             [1, 2, 3, 4].forEach(k => {
@@ -1116,5 +1115,5 @@ function userBought(vk_id, itemId) {
             socket.emit("update-user-info", socket.user);
         }
     })
-    .catch((e) => {badErrorHandler(e); socket.emit("err", { text: errText})});
+    .catch((e) => {badErrorHandler(`Ошибка при покупке ${itemId} пользователем ${vk_id}`); socket.emit("err", { text: errText})});
 }
