@@ -11,7 +11,7 @@ const cheats        = require('./metadata.json').cheats;
 const moneyItems    = require('./metadata.json').money;
 const errText       = "Произошла ошибка!";
 const cheatOn       = "Данный чит уже активирован. Дождитесь когда действие закончится, и тогда вы сможете наложить его снова.";
-const badErrorHandler = e => console.log(e);
+const badErrorHandler = e => console.log('error: ', e);
 let topByRank       = [];
 let topByChips      = [];
 
@@ -19,7 +19,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(function(req, res, next) { 
     res.header("Access-Control-Allow-Credentials", "true");
-    res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.69:3000/');
+    res.header("Access-Control-Allow-Origins", process.env.PORT ? 'https://parchees-82bf1.web.app/' : 'http://192.168.1.3:3000/');
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
 });
@@ -110,18 +110,37 @@ tables.indexOfPlayer = function(tableId, socketId) {
 }
 
 let availableTables;
-updAvailableTables();
+let playersInGame = 0;
+let playersConnected = 0;
+
 function updAvailableTables() {
+    playersInGame = 0;
+
     availableTables = tables.filter(i => {
         return i.players.length !== 4 && (!i.game || i.game.finished);
-    })
-    .map(table => { return { tableId: table.id, players: table.players, rating: table.rating, bet: table.bet }; });
+    });
+
+    availableTables = availableTables.map(table => {
+        playersInGame += table.players.length;
+
+        return {
+            tableId: table.id,
+            players: table.players,
+            rating: table.rating,
+            bet: table.bet
+        };
+    });
+
     setTimeout(updAvailableTables, 500);
 }
+
+updAvailableTables();
 
 const timers = {};
 
 io.on("connection", socket => {
+    playersConnected++;
+
     socket.use((packet, next) => {
         if (socket.user || packet[0] === 'init') return next();
         socket.emit('request-auth');
@@ -147,13 +166,17 @@ io.on("connection", socket => {
                     socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 };
                     socket.emit("init-finished", { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank, justInstalled: true });
                 })
-                .catch(err => badErrorHandler)
+                .catch(badErrorHandler)
             }
         })
         .catch(err => console.error('Error executing query', err.stack));
     });
     socket.on("get-tables-request", () => {
-        socket.emit("update-tables", availableTables);
+        socket.emit("update-tables", {
+            availableTables,
+            playersInMenu: playersConnected - playersInGame,
+            playersInGame
+        });
     });
 
     socket.on("new-table", data => {
@@ -207,7 +230,7 @@ io.on("connection", socket => {
     })
 
     socket.on("disconnecting", (data) => {
-
+        playersConnected--;
         let rooms = Object.keys(socket.rooms);
 
         rooms.forEach( room =>{
@@ -433,10 +456,16 @@ function handleBuying(data) {
     let cheat = cheats.find(ch => ch.id === data.id);
     if (!cheat) return;
 
-    pool.query(`UPDATE users set ${data.id} = ${data.id} + 1, ${cheat.currency} = ${cheat.currency} - ${cheat.price} WHERE vk_id = ${this.user.vk_id} returning ${data.id}, ${cheat.currency};`)
+    pool.query(`
+        UPDATE users
+            set ${cheat.id} = ${cheat.id} + 1,
+            ${cheat.currency} = ${cheat.currency} - ${cheat.price}
+        WHERE vk_id = ${this.user.vk_id}
+        returning ${cheat.id}, ${cheat.currency};
+    `)
     .then(resp => {
         const row = resp.rows[0];
-        this.user[data.id] = row[data.id];
+        this.user[cheat.id] = row[cheat.id];
         this.user[cheat.currency] = row[cheat.currency];
 
         this.emit("update-user-info", this.user);
@@ -536,7 +565,6 @@ function makeRandomMove(table) {
         return false;
     }
     let move = possibleMoves[(Math.random() * possibleMoves.length) ^ 0];
-    console.log(chip.player, chip.num, chip.position, move, possibleMoves);
 
     playerMadeMove.call(this, {tableId: table.id, yourTurn: table.game.turn, chipNum: move.chipNum, targetId: move.targetId, diceNum: move.diceNum});
     return true;
@@ -649,6 +677,7 @@ function moveChipOnRoute(table, chip, route, diceNum, forceFlight = false) {
         }      
     }
 }
+
 function rollDice(data, auto, cheat) {
     let table = tables.findById(data.tableId);
     let error, player;
