@@ -25,7 +25,10 @@ app.use(function(req, res, next) {
 });
 //io.set('origins', 'https://parchees-82bf1.web.app/');
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/parcheesi"
+    connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/parcheesi",
+    ssl: {
+      rejectUnauthorized: false
+    }
 });
 
 updateRecords();
@@ -1081,6 +1084,7 @@ function newGame(players) {
 
     return ret;
 }
+
 function defaultChipsPositions(playersOrder) {
     let ret = {};
 
@@ -1100,6 +1104,7 @@ function defaultChipsPositions(playersOrder) {
 
     return ret;
 }
+
 const orderOptions = [[], [1], [1, 3], [1, 2, 3], [1, 2, 3, 4]];
 function getPlayersOrder(num) {
     return orderOptions[num];
