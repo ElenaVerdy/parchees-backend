@@ -9,6 +9,7 @@ const md5           = require('md5');
 const commonChat    = [];
 const cheats        = require('./metadata.json').cheats;
 const moneyItems    = require('./metadata.json').money;
+const pgConfig      = require('./pgConfig')
 const errText       = "Произошла ошибка!";
 const cheatOn       = "Данный чит уже активирован. Дождитесь когда действие закончится, и тогда вы сможете наложить его снова.";
 const badErrorHandler = e => console.log('error: ', e);
@@ -24,12 +25,7 @@ app.use(function(req, res, next) {
     next();
 });
 //io.set('origins', 'https://parchees-82bf1.web.app/');
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/parcheesi",
-    ssl: {
-      rejectUnauthorized: false
-    }
-});
+const pool = new Pool(pgConfig);
 
 updateRecords();
 setInterval(updateRecords, 1000 * 60 * 10);
