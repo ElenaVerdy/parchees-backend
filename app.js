@@ -1,5 +1,6 @@
 const express       = require('express');
-const censor        = require('./censor.js');
+const censor        = require('./utils/censor.js');
+const TablesList        = require('./classes/TablesList.js');
 const app           = express();
 const server        = app.listen(process.env.PORT || 8000, () => console.log(`Listening on port ${process.env.PORT || 8000}!`));
 const { Pool }      = require('pg');
@@ -63,77 +64,9 @@ app.post('/vk_payments_api', (req, res) => {
     }
 });
 
-const tables = [];
-tables.remove = function(tableId) {
-    let table = this.find(table => table.id === tableId);
+const tablesList = new TablesList();
 
-    if (!table) return false;
-
-    tables.splice(tables.indexOf(table), 1);
-
-    return true;
-}
-tables.findById = function(id) {return this.find(table => table.id === id)}
-tables.removePlayer = function(tableId, socketId) {
-    let table = this.findById(tableId);
-
-    if (!table) return false;
-
-    let player = table.players.find(player => player.id === socketId);
-
-    if (!player) return false;
-
-    table.players.splice(table.players.indexOf(player), 1);
-
-    return true;
-}
-tables.findPlayer = function(tableId, socketId) {
-    let table = this.findById(tableId);
-
-    if (!table) return false;
-    
-    let player = table.players.find(player => player.id === socketId);
-
-    return player || false;
-}
-tables.indexOfPlayer = function(tableId, socketId) {
-    let table = this.findById(tableId);
-    
-    if (!table || !table.game) return -1;
-
-    let player = table.players.find(player => player.id === socketId);
-    
-    if (!player) return -1;
-
-    return table.players.indexOf(player);
-}
-
-let availableTables;
-let playersInGame = 0;
 let playersConnected = 0;
-
-function updAvailableTables() {
-    playersInGame = 0;
-
-    availableTables = tables.filter(i => {
-        return i.players.length !== 4 && (!i.game || i.game.finished);
-    });
-
-    availableTables = availableTables.map(table => {
-        playersInGame += table.players.length;
-
-        return {
-            tableId: table.id,
-            players: table.players,
-            rating: table.rating,
-            bet: table.bet
-        };
-    });
-
-    setTimeout(updAvailableTables, 500);
-}
-
-updAvailableTables();
 
 const timers = {};
 
@@ -150,15 +83,18 @@ io.on("connection", socket => {
         .query(`SELECT *, NOW() AS now FROM users WHERE vk_id = ${data.vk_id} limit 1;`)
         .then(res => {
             if (res.rows.length) {
-                if (res.rows[0].socket_id && res.rows[0].socket_id !== socket.id && io.sockets.server.eio.clients[res.rows[0].socket_id]) {
+                const user = res.rows[0]
+                const previousSocketId = user.socket_id
+
+                if (previousSocketId && previousSocketId !== socket.id && io.sockets.server.eio.clients[previousSocketId]) {
                     socket.emit("err", { text: 'Кажется вы уже в игре! Может быть в другой вкладке?'});
                     return;
                 }
                 pool.query(`UPDATE users SET socket_id = '${socket.id}' WHERE vk_id  = ${data.vk_id}`).catch(badErrorHandler);
 
-                let timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now);
-                socket.user = { ...res.rows[0], ...data, name: data.name, timeToLottery};
-                socket.emit("init-finished", { ...res.rows[0], name: data.name, timeToLottery, topByChips, topByRank });
+                let timeToLottery = getTimeToLottery(user.last_lottery, user.now);
+                socket.user = { ...user, ...data, name: data.name, timeToLottery};
+                socket.emit("init-finished", { ...user, name: data.name, timeToLottery, topByChips, topByRank });
             } else {
                 pool.query(`INSERT INTO users (vk_id, socket_id) values (${data.vk_id}, '${socket.id}') returning *;`)
                 .then(resp => {
@@ -171,17 +107,18 @@ io.on("connection", socket => {
         .catch(err => console.error('Error executing query', err.stack));
     });
     socket.on("get-tables-request", () => {
+        const playersInGame = tablesList.playersInGame
+
         socket.emit("update-tables", {
-            availableTables,
+            availableTables: tablesList.availableTables,
             playersInMenu: playersConnected - playersInGame,
             playersInGame
         });
     });
 
-    socket.on("new-table", data => {
-        if (!data.bet) return;
-        if (data.bet > socket.user.chips) return socket.emit("err", { text: 'Недостаточно фишек!' });
-        let tableId = "t_" + (Math.random() * 100000000 ^ 0);
+    socket.on("new-table", ({ bet }) => {
+        if (!bet) return;
+        if (bet > socket.user.chips) return socket.emit("err", { text: 'Недостаточно фишек!' });
         let player = {
             id: socket.id,
             vk_id: socket.user.vk_id,
@@ -193,15 +130,16 @@ io.on("connection", socket => {
             socket
         };
         Object.defineProperty(player, "socket", { enumerable: false });
-        tables.push({id: tableId, bet: data.bet, players: [ player ], rating: socket.user.rating, chat: []});
+        const tableId = tablesList.addTable({bet, players: [ player ]});
 
-        socket.emit("connect-to", {id: tableId, players: [player], bet: data.bet});
-        socket.join(tableId);
         io.in(tableId).emit("update-players", {players: [player], tableId});
+
+        socket.emit("connect-to", {id: tableId, players: [player], bet});
+        socket.join(tableId);
     })
 
     socket.on("connect-to-request", data => {
-        let table = tables.findById(data.id);
+        let table = tablesList.findById(data.id);
 
         if (!table || (table.game && !table.game.finished) || table.players.length === 4) {
             socket.emit("cant-join", {text: "Не получилось подключиться!"});
@@ -235,7 +173,7 @@ io.on("connection", socket => {
         rooms.forEach( room =>{
             if (room.slice(0, 2) !== "t_") return;
 
-            let table = tables.findById(room);
+            let table = tablesList.findById(room);
             if (!table) return;
 
             playerDisconnected(table, socket.id)
@@ -248,19 +186,19 @@ io.on("connection", socket => {
     
     socket.on("leave-table", data => {
         if (!data.tableId) return;
-        let player = tables.findPlayer(data.tableId, socket.id);
+        let player = tablesList.findPlayer(data.tableId, socket.id);
         if (!player || player.left) return;
 
-        let table = tables.findById(data.tableId);
+        let table = tablesList.findById(data.tableId);
         socket.leave(data.tableId);
         playerDisconnected(table, socket.id);
     });
 
     socket.on("ready", (data) => {
-        let table = tables.findById(data.tableId);
+        let table = tablesList.findById(data.tableId);
         if (!table) return;
 
-        let player = tables.findPlayer(data.tableId, socket.id);
+        let player = tablesList.findPlayer(data.tableId, socket.id);
         if (!player) return;
 
         player.ready = data.ready;
@@ -271,10 +209,10 @@ io.on("connection", socket => {
 
     socket.on("chip-moved", playerMadeMove.bind(socket));
     socket.on("reset-timer", data => {
-        let table = tables.findById(data.tableId);
+        let table = tablesList.findById(data.tableId);
         if (!table) return badErrorHandler("game not found");
         if (!table.game || !table.game.finished) return badErrorHandler('game is not on');
-        let player = tables.findPlayer(data.tableId, socket.id);
+        let player = tablesList.findPlayer(data.tableId, socket.id);
         if (!player) return badErrorHandler("You are not in the game");
         if (data.turn !== table.game.turn) return badErrorHandler("not your turn");
 
@@ -287,7 +225,7 @@ io.on("connection", socket => {
         if (data.room === 'main') {
             chat = commonChat;
         } else {
-            let table = tables.findById(data.room);
+            let table = tablesList.findById(data.room);
             if (!table) return;
             if (!table.players.find(pl => socket.id === pl.id)) return;
 
@@ -307,10 +245,10 @@ io.on("connection", socket => {
     socket.on("get-common-msgs", () => {socket.emit("new-msg", { room: 'main', old: commonChat })} );
     socket.on("buy-item", handleBuying.bind(socket));
     socket.on("use-item", data => {
-        let table = tables.findById(data.tableId);
+        let table = tablesList.findById(data.tableId);
         let cheat = cheats.find(ch => ch.id === data.cheatId);
         if (!data || !data.cheatId || !table || (!data.buy && !socket.user[data.cheatId]) || !cheat) return badErrorHandler("bad request");
-        let index = tables.indexOfPlayer(data.tableId, socket.id);
+        let index = tablesList.indexOfPlayer(data.tableId, socket.id);
         if (index === -1) return badErrorHandler("You are not in the game");
         if (index !== table.game.turn) return badErrorHandler("not your turn");
 
@@ -340,8 +278,9 @@ io.on("connection", socket => {
         socket.emit('lottery-field', { field: ret });
     });
     socket.on('lottery-roll', ({ buy }) => {
-        let dice = [Math.random() * 6 + 1 ^ 0, Math.random() * 6 + 1 ^ 0];
         if (!socket.user.lotteryField) return socket.emit("err", { text: errText});
+
+        let dice = [Math.random() * 6 + 1 ^ 0, Math.random() * 6 + 1 ^ 0];
         if (dice[0] < dice[1]) dice.push(dice.shift());
 
         if (!buy && (new Date() - new Date(socket.user.last_lottery) - 1000 * 20) < 0) {
@@ -489,12 +428,12 @@ function cheatExpired(table, cheatId, player, num) {
     }
 }
 function playerMadeMove(data) {
-    let table = tables.findById(data.tableId);
+    let table = tablesList.findById(data.tableId);
     if (!table) {
         this.emit("player-made-move", {error: "game not found"});
         return;
     }
-    let player = tables.findPlayer(data.tableId, this.id);
+    let player = tablesList.findPlayer(data.tableId, this.id);
     if (!player) {
         this.emit("player-made-move", {error: "You are not in the game"});
         return;
@@ -521,7 +460,7 @@ function autoMove(table) {
     let socket = io.sockets.connected[table.players[table.game.turn].id];
     if (!socket) return;
     if (!table.game.diceRolled) {
-        let playerIndex = tables.indexOfPlayer(table.id, socket.id);
+        let playerIndex = tablesList.indexOfPlayer(table.id, socket.id);
         if (!~playerIndex) return badErrorHandler('autoMove: player is not in game');
         if (table.players[playerIndex].missedTurn) {
             io.to(socket.id).emit('removed');
@@ -640,12 +579,12 @@ function getPossibleMoves(chip, dice, table) {
 
 function nextTurn(tableId, socketId = null) {
     let error, playerIndex, player;
-    let table = tables.findById(tableId);
+    let table = tablesList.findById(tableId);
     (function(){
         if (!table || !table.game)
             return error = "404: Игра не найдена.";
         
-        playerIndex = tables.indexOfPlayer(tableId, socketId || this.id);
+        playerIndex = tablesList.indexOfPlayer(tableId, socketId || this.id);
         player = table.players[playerIndex];
         
         if (!player) return error = "Игрок не участвует в игре!";
@@ -678,17 +617,17 @@ function moveChipOnRoute(table, chip, route, diceNum, forceFlight = false) {
 }
 
 function rollDice(data, auto, cheat) {
-    let table = tables.findById(data.tableId);
+    let table = tablesList.findById(data.tableId);
     let error, player;
     (function() {
         if (!table || !table.game)
             return error = "404: Игра не найдена.";
 
-        player = tables.findPlayer(data.tableId, this.id);
+        player = tablesList.findPlayer(data.tableId, this.id);
         if (!player)
             return error = "Игрок не участвует в игре!";
 
-        if (tables.indexOfPlayer(table.id, this.id) !== table.game.turn)
+        if (tablesList.indexOfPlayer(table.id, this.id) !== table.game.turn)
             return error = "Не ваш ход!";
 
         if (table.game.diceRolled && !table.game.doublesStreak && !cheat)
@@ -917,9 +856,9 @@ function playerDisconnected(table, socketId) {
         playerLeftTheGame(table, socketId);
     } else {
         if (table.players.length === 1) {
-            tables.remove(table.id);
+            tablesList.remove(table.id);
         } else {
-            tables.removePlayer(table.id, socketId);
+            tablesList.removePlayer(table.id, socketId);
             updateRating(table);
             io.in(table.id).emit("update-players", {players: table.players});
             updateCountDown(table);
@@ -927,7 +866,7 @@ function playerDisconnected(table, socketId) {
     }
 }
 function playerLeftTheGame(table, socketId) {
-    let playerIndex = tables.indexOfPlayer(table.id, socketId);
+    let playerIndex = tablesList.indexOfPlayer(table.id, socketId);
     let player = table.players[playerIndex];
     let playerNum = table.game.playersOrder[playerIndex];
 
