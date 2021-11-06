@@ -1,7 +1,12 @@
+const Table = require('./Table');
+
 class TablesList {
     #list = [];
+    #io;
 
-    constructor () {
+    constructor (io) {
+        this.#io = io
+
         this.availableTables = [];
         this.playersInGame = 0;
         this.playersConnected = 0;
@@ -25,45 +30,33 @@ class TablesList {
 
     removePlayer (tableId, socketId) {
         let table = this.findById(tableId);
-    
+
         if (!table) return false;
-    
-        let player = table.players.find(player => player.id === socketId);
-    
-        if (!player) return false;
-    
-        table.players.splice(table.players.indexOf(player), 1);
-    
-        return true;
+
+        return table.removePlayer(socketId)
     }
 
     findPlayer (tableId, socketId) {
         let table = this.findById(tableId);
-    
+
         if (!table) return false;
-        
-        let player = table.players.find(player => player.id === socketId);
-    
-        return player || false;
+
+        return table.findPlayer(socketId)
     }
 
     indexOfPlayer (tableId, socketId) {
         let table = this.findById(tableId);
-        
+
         if (!table || !table.game) return -1;
-    
-        let player = table.players.find(player => player.id === socketId);
-        
-        if (!player) return -1;
-    
-        return table.players.indexOf(player);
+
+        return table.indexOfPlayer(socketId);
     }
 
     updAvailableTables () {
         let playersInGame = 0;
 
-        let availableTables = this.#list.filter(i => {
-            return i.players.length !== 4 && (!i.game || i.game.finished);
+        let availableTables = this.#list.filter(table => {
+            return table.isOpen
         });
 
         availableTables = availableTables.map(table => {
@@ -83,22 +76,16 @@ class TablesList {
         setTimeout(this.updAvailableTables.bind(this), 500);
     }
 
-    getNewTableId () {
-        return "t_" + (Math.random() * 100000000 ^ 0);
-    }
-
-    addTable ({ players, bet }) {
-        const newTable = {
-            id: this.getNewTableId(),
-            chat: [],
-            players,
-            rating: players[0].rating,
-            bet
-        }
+    addTable ({ bet }) {
+        const newTable = new Table({
+            players: [],
+            bet,
+            io: this.#io
+        })
 
         this.#list.push(newTable)
 
-        return newTable.id
+        return newTable
     }
 }
 

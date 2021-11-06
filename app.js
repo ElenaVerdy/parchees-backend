@@ -64,7 +64,7 @@ app.post('/vk_payments_api', (req, res) => {
     }
 });
 
-const tablesList = new TablesList();
+const tablesList = new TablesList(io);
 
 let playersConnected = 0;
 
@@ -75,6 +75,10 @@ io.on("connection", socket => {
 
     socket.use((packet, next) => {
         if (socket.user || packet[0] === 'init') return next();
+        if (typeof packet[1] !== 'object' || !packet[1]) {
+            console.error('all payloads have to be objects')
+            return;
+        }
         socket.emit('request-auth');
     })
     socket.on("init", data => {
@@ -119,54 +123,31 @@ io.on("connection", socket => {
     socket.on("new-table", ({ bet }) => {
         if (!bet) return;
         if (bet > socket.user.chips) return socket.emit("err", { text: 'Недостаточно фишек!' });
-        let player = {
-            id: socket.id,
-            vk_id: socket.user.vk_id,
-            ready: false, 
-            name: socket.user.name,
-            photo_50: socket.user.photo_50,
-            photo_100: socket.user.photo_100,
-            rating: socket.user.rating,
-            socket
-        };
-        Object.defineProperty(player, "socket", { enumerable: false });
-        const tableId = tablesList.addTable({bet, players: [ player ]});
 
-        io.in(tableId).emit("update-players", {players: [player], tableId});
+        const table = tablesList.addTable({ bet });
 
-        socket.emit("connect-to", {id: tableId, players: [player], bet});
-        socket.join(tableId);
+        table.addPlayer(socket)
+
+        table.updatePlayers()
     })
 
     socket.on("connect-to-request", data => {
         let table = tablesList.findById(data.id);
 
-        if (!table || (table.game && !table.game.finished) || table.players.length === 4) {
+        if (!table || !table.isOpen) {
             socket.emit("cant-join", {text: "Не получилось подключиться!"});
             return;
         }
         if (table.bet > socket.user.chips) return socket.emit("err", { text: 'Недостаточно фишек!' });
-        let player = {
-            id: socket.id,
-            ready: false,
-            name: socket.user.name,
-            photo_50: socket.user.photo_50,
-            photo_100: socket.user.photo_100,
-            vk_id: socket.user.vk_id,
-            rating: socket.user.rating,
-            socket
-        };
-        table.players.push(player);
-        Object.defineProperty(player, "socket", { enumerable: false });
-        socket.emit("connect-to", {id: table.id, players: cloneDeep(table.players), bet: table.bet});
-        socket.join(table.id);
+
+        table.addPlayer(socket)
+
         socket.emit("new-msg", { room: data.id, old: table.chat });
-        io.in(table.id).emit("update-players", {players: cloneDeep(table.players)});
-        updateRating(table);
+        table.updatePlayers()
         updateCountDown(table);
     })
 
-    socket.on("disconnecting", (data) => {
+    socket.on("disconnecting", () => {
         playersConnected--;
         let rooms = Object.keys(socket.rooms);
 
@@ -184,37 +165,37 @@ io.on("connection", socket => {
 
     socket.on("finish-turn", data => nextTurn.call(socket, data.tableId));
     
-    socket.on("leave-table", data => {
-        if (!data.tableId) return;
-        let player = tablesList.findPlayer(data.tableId, socket.id);
+    socket.on("leave-table", ({ tableId }) => {
+        let table = tablesList.findById(tableId);
+        if (!table) return;
+        let player = table.findPlayer(socket.id);
         if (!player || player.left) return;
 
-        let table = tablesList.findById(data.tableId);
-        socket.leave(data.tableId);
+        socket.leave(tableId);
         playerDisconnected(table, socket.id);
     });
 
-    socket.on("ready", (data) => {
-        let table = tablesList.findById(data.tableId);
+    socket.on("ready", ({ tableId, ready }) => {
+        let table = tablesList.findById(tableId);
         if (!table) return;
 
-        let player = tablesList.findPlayer(data.tableId, socket.id);
+        let player = table.findPlayer(socket.id);
         if (!player) return;
 
-        player.ready = data.ready;
-        io.in(table.id).emit("update-players", { players: cloneDeep(table.players) });
+        player.ready = ready;
+        table.updatePlayers()
 
         updateCountDown(table);
     });
 
     socket.on("chip-moved", playerMadeMove.bind(socket));
-    socket.on("reset-timer", data => {
-        let table = tablesList.findById(data.tableId);
+    socket.on("reset-timer", ({ tableId, turn }) => {
+        let table = tablesList.findById(tableId);
         if (!table) return badErrorHandler("game not found");
         if (!table.game || !table.game.finished) return badErrorHandler('game is not on');
-        let player = tablesList.findPlayer(data.tableId, socket.id);
+        let player = table.findPlayer(socket.id);
         if (!player) return badErrorHandler("You are not in the game");
-        if (data.turn !== table.game.turn) return badErrorHandler("not your turn");
+        if (turn !== table.game.turn) return badErrorHandler("not your turn");
 
         clearTimeout(timers[table.id]);
         timers[table.id] = setTimeout(autoMove.bind(null, table), 15000);
@@ -245,21 +226,23 @@ io.on("connection", socket => {
     socket.on("get-common-msgs", () => {socket.emit("new-msg", { room: 'main', old: commonChat })} );
     socket.on("buy-item", handleBuying.bind(socket));
     socket.on("use-item", data => {
-        let table = tablesList.findById(data.tableId);
-        let cheat = cheats.find(ch => ch.id === data.cheatId);
-        if (!data || !data.cheatId || !table || (!data.buy && !socket.user[data.cheatId]) || !cheat) return badErrorHandler("bad request");
-        let index = tablesList.indexOfPlayer(data.tableId, socket.id);
+        const { tableId, buy, cheatId } = data
+
+        let table = tablesList.findById(tableId);
+        let cheat = cheats.find(ch => ch.id === cheatId);
+        if (!cheat || !table || (!buy && !socket.user[cheatId])) return badErrorHandler("bad request");
+        let index = table.indexOfPlayer(socket.id);
         if (index === -1) return badErrorHandler("You are not in the game");
         if (index !== table.game.turn) return badErrorHandler("not your turn");
 
-        if (!validateCheat(table, socket, data)) return;
+        if (!validateCheat(table, socket, { tableId, buy, cheatId })) return;
 
-        let column = data.buy ? cheat.currency : cheat.id;
-        pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
+        let column = buy ? cheat.currency : cheat.id;
+        pool.query(`UPDATE users SET ${column} = ${column} - ${buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
         .then(res => {
             if (!res.rows.length) return socket.emit("err", { text: errText + '123' });
             socket.user[column] = res.rows[0][column];
-            useItem(socket, table, data);
+            useItem(socket, table, { tableId, buy, cheatId });
         })
         .catch((e) => {badErrorHandler(e); socket.emit("err", { text: errText})});
     });
@@ -271,7 +254,6 @@ io.on("connection", socket => {
             let simple = [100, 100, 100, 100, 200, 200, 200, 300, 300, 400, 500, 1000, 1500, 2000, 2500].sort(() => Math.random() - 0.5);
             let doubles = [Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0];
             doubles = doubles.map(num => cheats[num].id);
-            doubles = doubles.sort(() => Math.random() - 0.5);
             ret = doubles.map((item, i) => simple.splice(0, i).concat(item));
             socket.user.lotteryField = ret;
         }
@@ -314,7 +296,7 @@ function useItem(socket, table, data) {
             nextTurn.call(socket, table.id);
             break;
         case 'reroll':
-            rollDice.call(socket, {tableId: table.id, dice: []}, false, true);
+            rollDice.call(socket, { tableId: table.id }, false, true);
             break;
         case 'shield':
         case 'flight':
@@ -411,7 +393,7 @@ function handleBuying(data) {
     .catch(() => this.emit("err", { text: errText }));
 }
 function updateCheats(table) {
-    table.game.cheats.forEach((ch, i) => {
+    table.game.cheats.forEach((ch) => {
         if (table.game.playersOrder[table.game.turn] !== ch.player) return;
         ch.count--;
         if (!ch.count) cheatExpired(table, ch.cheatId, ch.player, ch.num);
@@ -433,7 +415,7 @@ function playerMadeMove(data) {
         this.emit("player-made-move", {error: "game not found"});
         return;
     }
-    let player = tablesList.findPlayer(data.tableId, this.id);
+    let player = table.findPlayer(this.id);
     if (!player) {
         this.emit("player-made-move", {error: "You are not in the game"});
         return;
@@ -468,11 +450,11 @@ function autoMove(table) {
         } else {
             table.players[playerIndex].missedTurn = true;
         }
-        rollDice.call(socket, {tableId: table.id, dice: []}, true);
+        rollDice.call(socket, { tableId: table.id }, true);
     } else {
         if (!table.game.dice[0] && !table.game.dice[1]) {
             if (table.game.doublesStreak)
-                rollDice.call(socket, {tableId: table.id, dice: []}, true);
+                rollDice.call(socket, { tableId: table.id }, true);
             else
                 return nextTurn.call(socket, table.id);
         } else {
@@ -594,7 +576,7 @@ function nextTurn(tableId, socketId = null) {
     if (error) return io.to(socketId || this.id).emit("dice-rolled", { error });
 
     table.game.dice = [];
-    table.game.turn = findNextTurn(table);
+    table.game.turn = table.getNextTurn();
     table.game.diceRolled = false;
     clearTimeout(timers[tableId]);
     timers[tableId] = setTimeout(autoMove.bind(null, table), 15000);
@@ -616,14 +598,14 @@ function moveChipOnRoute(table, chip, route, diceNum, forceFlight = false) {
     }
 }
 
-function rollDice(data, auto, cheat) {
-    let table = tablesList.findById(data.tableId);
+function rollDice({ tableId } = {}, auto, cheat) {
+    let table = tablesList.findById(tableId);
     let error, player;
     (function() {
         if (!table || !table.game)
             return error = "404: Игра не найдена.";
 
-        player = tablesList.findPlayer(data.tableId, this.id);
+        player = tablesList.findPlayer(tableId, this.id);
         if (!player)
             return error = "Игрок не участвует в игре!";
 
@@ -644,8 +626,8 @@ function rollDice(data, auto, cheat) {
         dice[0] = table.game.dice[0] && Math.ceil(Math.random() * 6);
         dice[1] = table.game.dice[1] && Math.ceil(Math.random() * 6);
     } else {
-        dice[0] = data.dice[0] || Math.ceil(Math.random() * 6);
-        dice[1] = data.dice[1] || Math.ceil(Math.random() * 6);
+        dice[0] = Math.ceil(Math.random() * 6);
+        dice[1] = Math.ceil(Math.random() * 6);
     }
 
     if (!dice[0]) dice[0] = null;
@@ -659,7 +641,7 @@ function rollDice(data, auto, cheat) {
 
     table.game.dice = dice;
     table.game.diceRolled = true;
-    io.in(data.tableId).emit("dice-rolled", {dice, actionCount: ++table.game.actionCount, cheat, doublesStreak: table.game.doublesStreak});
+    io.in(tableId).emit("dice-rolled", {dice, actionCount: ++table.game.actionCount, cheat, doublesStreak: table.game.doublesStreak});
     clearTimeout(timers[table.id]);
     timers[table.id] = setTimeout(autoMove.bind(null, table), 45000);
     auto || (table.players[table.game.turn].missedTurn = false);
@@ -693,7 +675,7 @@ function gameWon(table, playerNum) {
                     rating = rating + tmp.delta_rank,
                     chips = chips + tmp.delta_bet
                     from (values
-                        ${sorted.filter(i => !i.left).map(pl => `(${pl.vk_id}, ${pl.deltaRank}, ${pl.deltaBet})`)}
+                        ${sorted.filter(i => !i.lvalidateCheateft).map(pl => `(${pl.vk_id}, ${pl.deltaRank}, ${pl.deltaBet})`)}
                     ) as tmp(vk_id, delta_rank, delta_bet) where users.vk_id = tmp.vk_id returning *;`)
         .then(res => {
             let results = sorted.map((pl, i) => {
@@ -722,9 +704,9 @@ function gameWon(table, playerNum) {
             table.game.finished = true;
             clearTimeout(timers[table.id]);
             table.players = table.players.filter(pl => !pl.left);
-            updateRating(table);
+            table.updateRating();
             io.in(table.id).emit("player-won", { results, actionCount: ++table.game.actionCount });
-            io.in(table.id).emit('update-players', { players: cloneDeep(table.players), afterWin: true });
+            table.updatePlayers({ afterWin: true })
         })
         .catch(err => console.error('Error executing query', err.stack));
 }
@@ -818,12 +800,11 @@ function getRoute(table, diceNum, chipNum, cellId) {
 
 function updateCountDown(table) {
     const nums2colors = ['', 'красному', 'зелёному', 'синему', 'жёлтому']
-    let turnOff = table.players.length === 1 || !table.players.every(pl => pl.ready);
+    let turnOff = table.players.length === 1 || table.players.some(pl => !pl.ready);
     clearTimeout(timers[table.id]);
-    io.in(table.id).emit("all-players-ready", {cancel: true});
+    io.in(table.id).emit("all-players-ready", {cancel: turnOff});
     
     if (!turnOff) {
-        io.in(table.id).emit("all-players-ready", {cancel: false});
         timers[table.id] = setTimeout(() => {
             table.game = newGame(table.players);
             table.players.forEach(pl => pl.ready = false);
@@ -839,16 +820,6 @@ function updateCountDown(table) {
     }
 }
 
-function findNextTurn(table) {
-    let ret = table.game.turn;
-    for (let i = 0; i < 4; i++) {
-        ret = ((ret + 1) === table.players.length) ? 0 : ret + 1;
-
-        if (!table.players[ret].left)
-            return ret;
-    }
-}
-
 function playerDisconnected(table, socketId) {
     const game = table.game;
 
@@ -858,21 +829,20 @@ function playerDisconnected(table, socketId) {
         if (table.players.length === 1) {
             tablesList.remove(table.id);
         } else {
-            tablesList.removePlayer(table.id, socketId);
-            updateRating(table);
-            io.in(table.id).emit("update-players", {players: table.players});
+            table.removePlayer(socketId);
+            table.updatePlayers({ afterWin: true })
             updateCountDown(table);
         }
     }
 }
 function playerLeftTheGame(table, socketId) {
-    let playerIndex = tablesList.indexOfPlayer(table.id, socketId);
+    let playerIndex = table.indexOfPlayer(socketId);
     let player = table.players[playerIndex];
     let playerNum = table.game.playersOrder[playerIndex];
 
     player.left = true;
 
-    io.in(table.id).emit("update-players", {playerLeftIndex: playerIndex});
+    io.in(table.id).emit("player-left", { playerIndex });
 
     [1, 2, 3, 4].forEach((chipNum) => {
         moveChipToCell(table, table.game.chips[playerNum][chipNum], `game_chip-base_chip-space_player${playerNum}_num${chipNum}`, true);
@@ -890,7 +860,7 @@ function playerLeftTheGame(table, socketId) {
             }
         }).catch(badErrorHandler);
 
-    if (isOnePlayerLeft(table)) {
+    if (table.isOnePlayerLeft) {
         let winnerIndex = table.players.findIndex(pl => !pl.left);
         gameWon(table, table.game.playersOrder[winnerIndex]);
     }
@@ -916,9 +886,6 @@ function getCellsToFinish(scheme, playerNum, position) {
         ret++;
     }
     return ret;
-}
-function isOnePlayerLeft(table) {
-    return table.game && (table.players.filter(pl => !pl.left).length === 1);
 }
 
 function createScheme() {
@@ -1059,10 +1026,6 @@ function checkForWin(table, playerNum) {
             return false;
     }
     return true;
-}
-
-function updateRating (table){
-    table.rating = table.players.map(pl => pl.rating).reduce((a, b) => a + b, 0) / table.players.length ^ 0;
 }
 
 function updateRecords() {
