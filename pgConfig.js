@@ -1,5 +1,5 @@
 const pgConfig = {
-    connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/parcheesi",
+    connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/parcheesi',
 }
 
 if (process.env.DATABASE_URL) {
