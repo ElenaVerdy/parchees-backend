@@ -2,6 +2,7 @@ ttsbegin;
 
 CREATE TABLE users (
     id                  integer primary key,
+    vk_id               integer DEFAULT 0,
     rating              integer DEFAULT 2000,
     chips               integer DEFAULT 500,
     money               integer DEFAULT 0,
@@ -34,8 +35,6 @@ CREATE TABLE users (
     constraint flight       check (flight >= 0),
     constraint move_back    check (move_back >= 0)
 );
-alter table users
-   add constraint stock_nonnegative check (stock_quantity >= 0);
 
 alter table users add column socket_id varchar(128);
 /*****************/
