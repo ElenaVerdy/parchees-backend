@@ -1,9 +1,12 @@
 ttsbegin;
 
 CREATE TABLE users (
-    id                  integer primary key,
+    id                  serial primary key,
     vk_id               integer DEFAULT 0,
     rating              integer DEFAULT 2000,
+    socket_id           varchar(128),
+    first_name          varchar(256),
+    last_name           varchar(256),
     photo_50            varchar(256),
     photo_100           varchar(256),
     chips               integer DEFAULT 2000,
