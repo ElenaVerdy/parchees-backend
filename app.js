@@ -10,6 +10,7 @@ const md5           = require('md5')
 const commonChat    = []
 const cheats        = require('./metadata.json').cheats
 const moneyItems    = require('./metadata.json').money
+const { VK_USERS_DATA } = require('./constants/index.js')
 const pgConfig      = require('./pgConfig')
 const errText       = 'Произошла ошибка!'
 const cheatOn       = 'Данный чит уже активирован. Дождитесь когда действие закончится, и тогда вы сможете наложить его снова.'
@@ -84,13 +85,20 @@ io.on('connection', socket => {
             return next()
         }
         if (typeof packet[1] !== 'object' || !packet[1]) {
-            console.error('all payloads have to be objects')
+            console.error('all payloads have to be objects', { packet })
             return
         }
         socket.emit('request-auth')
     })
     socket.on('init', data => {
-        data.name = `${data.first_name} ${data.last_name}`
+        const selectedUser = VK_USERS_DATA.find(item => item.id === Number(data.vk_id))
+
+        if (!selectedUser) {
+            return
+        }
+
+        selectedUser.name = `${selectedUser.first_name} ${selectedUser.last_name}`
+
         pool
             .query(`SELECT *, NOW() AS now FROM users WHERE vk_id = ${data.vk_id} limit 1;`)
             .then(res => {
@@ -104,15 +112,15 @@ io.on('connection', socket => {
                     }
                     pool.query(`UPDATE users SET socket_id = '${socket.id}' WHERE vk_id  = ${data.vk_id}`).catch(badErrorHandler)
 
-                    const timeToLottery = getTimeToLottery(user.last_lottery, user.now)
+                    const timeToLottery = getTimeToLottery(res.rows[0].last_lottery, res.rows[0].now)
 
-                    socket.user = { ...user, ...data, name: data.name, timeToLottery }
-                    socket.emit('init-finished', { ...user, name: data.name, timeToLottery, topByChips, topByRank })
+                    socket.user = { ...user, ...selectedUser, timeToLottery }
+                    socket.emit('init-finished', { ...user, ...selectedUser, timeToLottery, topByChips, topByRank })
                 } else {
-                    pool.query(`INSERT INTO users (vk_id, socket_id) values (${data.vk_id}, '${socket.id}') returning *;`)
+                    pool.query(`INSERT INTO users (vk_id, socket_id, photo_50, photo_100, last_name, first_name) values (${data.vk_id}, '${socket.id}', '${selectedUser.photo_50}', '${selectedUser.photo_100}', '${selectedUser.last_name}', '${selectedUser.first_name}') returning *;`)
                         .then(resp => {
-                            socket.user = { ...resp.rows[0], ...data, name: data.name, new: true, timeToLottery: 0 }
-                            socket.emit('init-finished', { ...resp.rows[0], name: data.name, new: true, timeToLottery: 0, topByChips, topByRank, justInstalled: true })
+                            socket.user = { ...resp.rows[0], ...selectedUser, new: true, timeToLottery: 0 }
+                            socket.emit('init-finished', { ...resp.rows[0], ...selectedUser, new: true, timeToLottery: 0, topByChips, topByRank, justInstalled: true })
                         })
                         .catch(badErrorHandler)
                 }
@@ -227,7 +235,7 @@ io.on('connection', socket => {
         if (!table) {
             return badErrorHandler('game not found')
         }
-        if (!table.game || !table.game.finished) {
+        if (!table.game || table.game.finished) {
             return badErrorHandler('game is not on')
         }
         const player = table.findPlayer(socket.id)
@@ -277,14 +285,13 @@ io.on('connection', socket => {
     } )
     socket.on('buy-item', handleBuying.bind(socket))
     socket.on('use-item', data => {
-        const { tableId, buy, cheatId } = data
-        const table = tablesList.findById(tableId)
-        const cheat = cheats.find(ch => ch.id === cheatId)
+        const table = tablesList.findById(data.tableId)
+        const cheat = cheats.find(ch => ch.id === data.cheatId)
 
-        if (!cheat || !table || (!buy && !socket.user[cheatId])) {
+        if (!data || !data.cheatId || !table || (!data.buy && !socket.user[data.cheatId]) || !cheat) {
             return badErrorHandler('bad request')
         }
-        const index = table.indexOfPlayer(socket.id)
+        const index = tablesList.indexOfPlayer(data.tableId, socket.id)
 
         if (index === -1) {
             return badErrorHandler('You are not in the game')
@@ -293,19 +300,19 @@ io.on('connection', socket => {
             return badErrorHandler('not your turn')
         }
 
-        if (!validateCheat(table, socket, { tableId, buy, cheatId })) {
+        if (!validateCheat(table, socket, data)) {
             return
         }
 
-        const column = buy ? cheat.currency : cheat.id
+        const column = data.buy ? cheat.currency : cheat.id
 
-        pool.query(`UPDATE users SET ${column} = ${column} - ${buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
+        pool.query(`UPDATE users SET ${column} = ${column} - ${data.buy ? cheat.price : 1} WHERE vk_id = ${socket.user.vk_id} returning ${column};`)
             .then(res => {
                 if (!res.rows.length) {
                     return socket.emit('err', { text: errText + '123' })
                 }
                 socket.user[column] = res.rows[0][column]
-                useItem(socket, table, { tableId, buy, cheatId })
+                useItem(socket, table, data)
             })
             .catch((e) => {
                 badErrorHandler(e); socket.emit('err', { text: errText })
@@ -321,6 +328,7 @@ io.on('connection', socket => {
             let doubles = [Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0, Math.random() * 8 ^ 0]
 
             doubles = doubles.map(num => cheats[num].id)
+            doubles = doubles.sort(() => Math.random() - 0.5)
             ret = doubles.map((item, i) => simple.splice(0, i).concat(item))
             socket.user.lotteryField = ret
         }
@@ -501,7 +509,7 @@ function handleBuying(data) {
         .catch(() => this.emit('err', { text: errText }))
 }
 function updateCheats(table) {
-    table.game.cheats.forEach((ch) => {
+    table.game.cheats.forEach(ch => {
         if (table.game.playersOrder[table.game.turn] !== ch.player) {
             return
         }
@@ -868,10 +876,10 @@ function gameWon(table, playerNum) {
                     rating = rating + tmp.delta_rank,
                     chips = chips + tmp.delta_bet
                     from (values
-                        ${sorted.filter(i => !i.lvalidateCheateft).map(pl => `(${pl.vk_id}, ${pl.deltaRank}, ${pl.deltaBet})`)}
+                        ${sorted.filter(i => !i.left).map(pl => `(${pl.vk_id}, ${pl.deltaRank}, ${pl.deltaBet})`)}
                     ) as tmp(vk_id, delta_rank, delta_bet) where users.vk_id = tmp.vk_id returning *;`)
         .then(res => {
-            const results = sorted.map((pl) => {
+            const results = sorted.map(pl => {
                 const usersRes = res.rows.find(r => r.vk_id === pl.vk_id)
 
                 if (usersRes) {
@@ -1268,9 +1276,9 @@ function checkForWin(table, playerNum) {
 }
 
 function updateRecords() {
-    pool.query('SELECT vk_id, rating from users order by rating desc limit 20;')
+    pool.query('SELECT vk_id, rating, photo_50, last_name, first_name from users order by rating desc limit 20;')
         .then(res => topByRank = res.rows)
-    pool.query('SELECT vk_id, chips from users order by chips desc limit 20;')
+    pool.query('SELECT vk_id, chips, photo_50, last_name, first_name from users order by chips desc limit 20;')
         .then(res => topByChips = res.rows)
 }
 
